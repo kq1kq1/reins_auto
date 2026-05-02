@@ -1,0 +1,28 @@
+# 認証情報を含むためコミット禁止
+config.json
+
+# ブラウザの永続プロファイル（ログイン情報・Cookie含む）
+browser_profile/
+
+# DB・ログ・PDF出力
+reins_db.xlsx
+*.log
+exports/
+
+# デバッグ出力
+debug_*.html
+error_*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
