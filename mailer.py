@@ -140,6 +140,7 @@ def _table_header(show_old_price: bool = False) -> str:
       <th {_TH}>建物面積</th>
       <th {_TH}>専有面積</th>
       <th {_TH}>所在階</th>
+      <th {_TH}>図面</th>
     </tr>"""
 
 
@@ -174,7 +175,16 @@ def _prop_row(p: dict, show_old_price: bool = False) -> str:
       <td {_TD_NUM}>{p.get("建物面積", "")}</td>
       <td {_TD_NUM}>{p.get("専有面積", "")}</td>
       <td {_TD}>{p.get("所在階", "")}</td>
+      <td {_TD}>{_zumen_label(p.get("図面", ""))}</td>
     </tr>"""
+
+
+def _zumen_label(value: str) -> str:
+    if value == "なし":
+        return '<span style="color:#cc0000;font-weight:bold">図面なし</span>'
+    if value == "あり":
+        return '<span style="color:#1a7340">あり</span>'
+    return value
 
 
 def _price_arrow(old: str, new: str) -> str:

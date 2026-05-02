@@ -615,10 +615,15 @@ class REINSScraper:
 
                 full_text = "\n".join(texts)
 
+                # 図面ボタンの有無を先に判定
+                zumen_btn = await row.query_selector('button:has-text("図面")')
+                has_zumen = zumen_btn is not None
+
                 # PDF DL判定: skip_zumen=False かつ 既存DBになく、かつ一般媒介の重複でもない場合のみDL
                 pdf_path = ""
                 should_dl = (
                     not self.skip_zumen
+                    and has_zumen
                     and prop_id not in self._existing_ids
                 )
                 if should_dl:
@@ -635,9 +640,7 @@ class REINSScraper:
                             self._seen_ippan_keys.add(ippan_key)
 
                 if should_dl:
-                    zumen_btn = await row.query_selector('button:has-text("図面")')
-                    if zumen_btn:
-                        pdf_path = await self._download_zumen(page, zumen_btn, prop_id)
+                    pdf_path = await self._download_zumen(page, zumen_btn, prop_id)
 
                 prop = {
                     "物件番号":   prop_id,
@@ -666,6 +669,7 @@ class REINSScraper:
                     "会社名":     _extract_company(col("商号")),
                     "電話番号":   col("電話番号"),
                     "登録日":     _extract_date(full_text),
+                    "図面":       "あり" if has_zumen else "なし",
                     "グループID": "",
                     "初回取得日": today,
                     "最終確認日": today,
