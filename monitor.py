@@ -26,7 +26,7 @@ from scraper import REINSScraper
 from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
-    restore_candidate, confirm_removal, STATUS_CANDIDATE,
+    restore_candidates, confirm_removals, STATUS_CANDIDATE,
 )
 from rules import apply_rules
 from mailer import send_email, build_summary_email
@@ -284,34 +284,43 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
 # 戻す（取消候補 → アクティブ復元）
 # ================================================================
 
+import re
+
+def _parse_prop_ids(s: str) -> list[str]:
+    """カンマ・空白・改行で区切った物件番号文字列をリストに分解する。"""
+    return [x for x in re.split(r"[,\s]+", s) if x.strip()]
+
+
 def run_restore(cfg: dict) -> None:
     db_path = cfg["storage"]["db_path"]
     print()
     print("取消候補にある物件番号を入力すると、アクティブに戻します。")
-    print("空Enterで終了します。")
+    print("複数件はカンマ・空白・改行で区切って入力可能。空Enterで終了。")
     while True:
-        pid = input("\n物件番号: ").strip()
-        if not pid:
+        s = input("\n物件番号: ").strip()
+        if not s:
             break
-        if restore_candidate(db_path, pid):
-            print(f"  ✔ {pid} をアクティブに戻しました")
-        else:
-            print(f"  ✘ {pid} が見つかりません（または取消候補ではありません）")
+        ids = _parse_prop_ids(s)
+        ok, not_found = restore_candidates(db_path, ids)
+        print(f"  ✔ {ok}件 アクティブに戻しました")
+        if not_found:
+            print(f"  ✘ 見つからなかった: {', '.join(not_found)}")
 
 
 def run_confirm(cfg: dict) -> None:
     db_path = cfg["storage"]["db_path"]
     print()
-    print("物件番号を入力すると、その物件を物件DBから外し成約・取消シートへ移します。")
-    print("空Enterで終了します。")
+    print("物件番号を入力すると、物件DBから外し成約・取消シートへ移します。")
+    print("複数件はカンマ・空白・改行で区切って入力可能。空Enterで終了。")
     while True:
-        pid = input("\n物件番号: ").strip()
-        if not pid:
+        s = input("\n物件番号: ").strip()
+        if not s:
             break
-        if confirm_removal(db_path, pid):
-            print(f"  ✔ {pid} を成約・取消シートへ移しました")
-        else:
-            print(f"  ✘ {pid} が物件DBに見つかりません")
+        ids = _parse_prop_ids(s)
+        ok, not_found = confirm_removals(db_path, ids)
+        print(f"  ✔ {ok}件 成約・取消シートへ移しました")
+        if not_found:
+            print(f"  ✘ 見つからなかった: {', '.join(not_found)}")
 
 
 # ================================================================

@@ -282,29 +282,60 @@ def process_grace_period(
 # ----------------------------------------------------------------
 
 def restore_candidate(db_path: str, prop_id: str) -> bool:
-    """指定した物件番号の状態を取消候補→アクティブに戻す。"""
+    """単一物件の取消候補→アクティブ。"""
+    ok, _ = restore_candidates(db_path, [prop_id])
+    return ok > 0
+
+
+def restore_candidates(db_path: str, prop_ids: list[str]) -> tuple[int, list[str]]:
+    """
+    複数物件をまとめて取消候補→アクティブに戻す。
+    Returns: (成功件数, 見つからなかった物件番号リスト)
+    """
+    if not prop_ids:
+        return 0, []
     db_df = load_db(db_path)
     if db_df.empty:
-        return False
-    mask = db_df[ID_COL].astype(str).str.strip() == str(prop_id).strip()
+        return 0, list(prop_ids)
+
+    targets = {str(p).strip() for p in prop_ids if str(p).strip()}
+    series  = db_df[ID_COL].astype(str).str.strip()
+    mask    = series.isin(targets)
     if not mask.any():
-        return False
+        return 0, list(targets)
+
     db_df.loc[mask, "状態"]       = STATUS_ACTIVE
     db_df.loc[mask, "取消候補日"] = ""
     save_db(db_path, db_df, load_archive(db_path), [])
-    return True
+
+    found = set(series[mask])
+    not_found = sorted(targets - found)
+    return int(mask.sum()), not_found
 
 
 def confirm_removal(db_path: str, prop_id: str) -> bool:
-    """指定した物件番号を物件DBから外し、成約・取消シートへ移動する。"""
+    """単一物件を物件DBから外して成約・取消シートへ。"""
+    ok, _ = confirm_removals(db_path, [prop_id])
+    return ok > 0
+
+
+def confirm_removals(db_path: str, prop_ids: list[str]) -> tuple[int, list[str]]:
+    """
+    複数物件をまとめて成約・取消シートへ移動。
+    Returns: (成功件数, 見つからなかった物件番号リスト)
+    """
+    if not prop_ids:
+        return 0, []
     db_df      = load_db(db_path)
     archive_df = load_archive(db_path)
     if db_df.empty:
-        return False
+        return 0, list(prop_ids)
 
-    mask = db_df[ID_COL].astype(str).str.strip() == str(prop_id).strip()
+    targets = {str(p).strip() for p in prop_ids if str(p).strip()}
+    series  = db_df[ID_COL].astype(str).str.strip()
+    mask    = series.isin(targets)
     if not mask.any():
-        return False
+        return 0, list(targets)
 
     today   = datetime.now().strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -321,7 +352,10 @@ def confirm_removal(db_path: str, prop_id: str) -> bool:
     new_db_df  = db_df[~mask].reset_index(drop=True)
     new_arch_df = pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
     save_db(db_path, new_db_df, new_arch_df, log_rows)
-    return True
+
+    found = set(series[mask])
+    not_found = sorted(targets - found)
+    return int(mask.sum()), not_found
 
 
 # ----------------------------------------------------------------
