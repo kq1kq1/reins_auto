@@ -182,7 +182,10 @@ class REINSScraper:
                         await _human_wait()
                     except Exception as e:
                         logger.error(f"  条件エラー: {e}", exc_info=True)
-                        await page.screenshot(path=f"error_{name or cid}.png")
+                        try:
+                            await page.screenshot(path=f"error_{name or cid}.png")
+                        except Exception:
+                            pass
                         results.append((name or str(cid), []))
 
                 print("\n全条件巡回完了。ブラウザを閉じます...")
@@ -454,16 +457,22 @@ class REINSScraper:
 
     async def _set_date_filter(self, page: Page, run_mode: str) -> None:
         """
-        morning: 「日付を指定」ラジオ → 前日〜今日
-        evening: 「当日」ラジオ
+        morning : 「日付を指定」ラジオ → 前日〜今日
+        evening : 「当日」ラジオ
+        weekly  : 何もしない
         """
         if run_mode == "evening":
             await _human_wait()
-            await page.click('//label[normalize-space(text())="当日"]/../input[@type="radio"]')
+            # ラベルが重なってるので force=True、複数マッチは first を使う
+            await page.locator(
+                '//label[normalize-space(text())="当日"]/../input[@type="radio"]'
+            ).first.check(force=True)
 
         elif run_mode == "morning":
             await _human_wait()
-            await page.click('//label[normalize-space(text())="日付を指定"]/../input[@type="radio"]')
+            await page.locator(
+                '//label[normalize-space(text())="日付を指定"]/../input[@type="radio"]'
+            ).first.check(force=True)
             await _human_wait(400, 800)
 
             today     = datetime.now()
