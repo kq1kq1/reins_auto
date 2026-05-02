@@ -26,7 +26,7 @@ from scraper import REINSScraper
 from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
-    restore_candidate, STATUS_CANDIDATE,
+    restore_candidate, confirm_removal, STATUS_CANDIDATE,
 )
 from rules import apply_rules
 from mailer import send_email, build_summary_email
@@ -47,7 +47,7 @@ def setup_logging(log_path: str) -> None:
 logger = logging.getLogger(__name__)
 
 VALID_MODES = (
-    "daily", "weekly", "restore",
+    "daily", "weekly", "restore", "confirm",
     "half_morning", "half_daily", "half_weekly",
     "morning", "evening", "auto_weekly", "bootstrap", "debug", "test_mail",
 )
@@ -299,6 +299,21 @@ def run_restore(cfg: dict) -> None:
             print(f"  ✘ {pid} が見つかりません（または取消候補ではありません）")
 
 
+def run_confirm(cfg: dict) -> None:
+    db_path = cfg["storage"]["db_path"]
+    print()
+    print("物件番号を入力すると、その物件を物件DBから外し成約・取消シートへ移します。")
+    print("空Enterで終了します。")
+    while True:
+        pid = input("\n物件番号: ").strip()
+        if not pid:
+            break
+        if confirm_removal(db_path, pid):
+            print(f"  ✔ {pid} を成約・取消シートへ移しました")
+        else:
+            print(f"  ✘ {pid} が物件DBに見つかりません")
+
+
 # ================================================================
 # 自動操作モード（規約リスクあり・通常使わない）
 # ================================================================
@@ -477,6 +492,8 @@ def main() -> None:
 
     if mode == "restore":
         run_restore(cfg)
+    elif mode == "confirm":
+        run_confirm(cfg)
     elif mode in ("daily", "weekly"):
         asyncio.run(run_loop(cfg, mode))
     elif mode in ("half_morning", "half_daily", "half_weekly"):

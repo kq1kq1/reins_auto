@@ -295,6 +295,35 @@ def restore_candidate(db_path: str, prop_id: str) -> bool:
     return True
 
 
+def confirm_removal(db_path: str, prop_id: str) -> bool:
+    """指定した物件番号を物件DBから外し、成約・取消シートへ移動する。"""
+    db_df      = load_db(db_path)
+    archive_df = load_archive(db_path)
+    if db_df.empty:
+        return False
+
+    mask = db_df[ID_COL].astype(str).str.strip() == str(prop_id).strip()
+    if not mask.any():
+        return False
+
+    today   = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    moving_rows = db_df[mask].to_dict("records")
+    archive_records = archive_df.to_dict("records") if not archive_df.empty else []
+    log_rows: list[dict] = []
+    for rec in moving_rows:
+        arch = {col: rec.get(col, "") for col in COLUMNS}
+        arch["成約・取消日"] = today
+        archive_records.append(arch)
+        log_rows.append(_log_row(now_str, rec.get("検出条件", ""), "成約・取消（手動）", rec))
+
+    new_db_df  = db_df[~mask].reset_index(drop=True)
+    new_arch_df = pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
+    save_db(db_path, new_db_df, new_arch_df, log_rows)
+    return True
+
+
 # ----------------------------------------------------------------
 # 保存
 # ----------------------------------------------------------------
