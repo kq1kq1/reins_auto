@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 VALID_MODES = (
     "daily", "weekly", "restore",
-    "half_daily", "half_weekly",
+    "half_morning", "half_daily", "half_weekly",
     "morning", "evening", "auto_weekly", "bootstrap", "debug", "test_mail",
 )
 
@@ -179,9 +179,10 @@ async def run_loop(cfg: dict, mode: str) -> None:
 
 async def run_half_auto(cfg: dict, mode: str) -> None:
     """
-    mode = 'half_daily' or 'half_weekly'
-      half_daily : ログイン手動・各条件を「当日」フィルタで自動検索
-      half_weekly: ログイン手動・各条件を日付フィルタなしで自動検索 + 取消候補マーキング
+    mode = 'half_morning' / 'half_daily' / 'half_weekly'
+      half_morning: ログイン手動・各条件を「日付を指定（前日〜当日）」で自動検索
+      half_daily  : ログイン手動・各条件を「当日」フィルタで自動検索
+      half_weekly : ログイン手動・各条件を日付フィルタなしで自動検索 + 取消候補マーキング
     """
     search_conditions = cfg["search_conditions"]
     db_path     = cfg["storage"]["db_path"]
@@ -208,7 +209,11 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     if not existing_db.empty and "物件番号" in existing_db.columns:
         existing_ids = set(existing_db["物件番号"].astype(str).str.strip())
 
-    scrape_mode = "evening" if mode == "half_daily" else "weekly"
+    scrape_mode = {
+        "half_morning": "morning",
+        "half_daily":   "evening",
+        "half_weekly":  "weekly",
+    }.get(mode, "evening")
     scraper = REINSScraper(cfg)
     scraped_by_condition = await scraper.run_after_login(
         search_conditions, run_mode=scrape_mode, dl_zumen=dl_zumen,
@@ -454,7 +459,7 @@ def main() -> None:
         run_restore(cfg)
     elif mode in ("daily", "weekly"):
         asyncio.run(run_loop(cfg, mode))
-    elif mode in ("half_daily", "half_weekly"):
+    elif mode in ("half_morning", "half_daily", "half_weekly"):
         asyncio.run(run_half_auto(cfg, mode))
     else:
         asyncio.run(run_auto(mode, cfg))
