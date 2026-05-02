@@ -46,6 +46,8 @@ class REINSScraper:
         self.wait_search   = self.browser_cfg.get("wait_ms_after_search", 3000)
         self.wait_cond     = self.browser_cfg.get("wait_ms_between_conditions", 2500)
         self.skip_zumen    = False  # bootstrap モードでTrueにすると図面DLをスキップ
+        self._existing_ids: set[str] = set()  # PDF DL前に既存物件をスキップする為のセット
+        self._seen_ippan_keys: set[tuple] = set()  # 一般媒介の重複検知用
 
     async def run(
         self,
@@ -102,6 +104,7 @@ class REINSScraper:
         search_conditions: list[dict],
         run_mode: str,
         dl_zumen: bool,
+        existing_ids: set[str] | None = None,
     ) -> list[tuple[str, list[dict]]]:
         """
         半自動モード: ユーザーが手動でログインした後、スクリプトが各条件を自動巡回する。
@@ -115,6 +118,8 @@ class REINSScraper:
         run_mode: "morning" / "evening" / "weekly"
         """
         self.skip_zumen = not dl_zumen
+        self._existing_ids = existing_ids or set()
+        self._seen_ippan_keys.clear()
         results: list[tuple[str, list[dict]]] = []
 
         async with async_playwright() as pw:
@@ -186,7 +191,9 @@ class REINSScraper:
 
         return results
 
-    async def run_manual_loop(self, dl_zumen: bool) -> list[tuple[str, list[dict]]]:
+    async def run_manual_loop(
+        self, dl_zumen: bool, existing_ids: set[str] | None = None,
+    ) -> list[tuple[str, list[dict]]]:
         """
         ブラウザを1回だけ開き、ユーザーが複数条件を順に検索する。
         各検索の結果はEnter押下時にパースされ、最後にまとめて返る。
@@ -203,6 +210,8 @@ class REINSScraper:
         Returns: [(condition_name, [props, ...]), ...]
         """
         self.skip_zumen = not dl_zumen
+        self._existing_ids = existing_ids or set()
+        self._seen_ippan_keys.clear()
         results: list[tuple[str, list[dict]]] = []
 
         async with async_playwright() as pw:
@@ -597,8 +606,26 @@ class REINSScraper:
 
                 full_text = "\n".join(texts)
 
+                # PDF DL判定: skip_zumen=False かつ 既存DBになく、かつ一般媒介の重複でもない場合のみDL
                 pdf_path = ""
-                if not self.skip_zumen:
+                should_dl = (
+                    not self.skip_zumen
+                    and prop_id not in self._existing_ids
+                )
+                if should_dl:
+                    torihiki = col("取引態様")
+                    if "一般" in torihiki:
+                        ippan_key = (
+                            _chome(col("所在地")),
+                            _norm_key(col("価格")),
+                            _norm_key(col("専有面積") or col("土地面積") or col("建物面積")),
+                        )
+                        if ippan_key in self._seen_ippan_keys:
+                            should_dl = False
+                        else:
+                            self._seen_ippan_keys.add(ippan_key)
+
+                if should_dl:
                     zumen_btn = await row.query_selector('button:has-text("図面")')
                     if zumen_btn:
                         pdf_path = await self._download_zumen(page, zumen_btn, prop_id)
@@ -790,6 +817,17 @@ def _extract_company(cell_text: str) -> str:
         if digit_ratio < 0.5:
             return line
     return cell_text.split("\n")[0].strip()
+
+
+def _chome(addr: str) -> str:
+    """所在地から丁目までを抽出する（一般媒介重複判定用）。"""
+    m = re.search(r"^(.+?\d+丁目)", addr or "")
+    return m.group(1) if m else (addr or "").strip()
+
+
+def _norm_key(s: str) -> str:
+    """数値文字列を正規化（一般媒介重複判定用）。"""
+    return re.sub(r"[\s,、　円万㎡]", "", str(s)).strip()
 
 
 def _normalize_price(raw: str) -> str:

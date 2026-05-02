@@ -98,9 +98,17 @@ async def run_loop(cfg: dict, mode: str) -> None:
     ans = input("図面PDFをダウンロードして印刷しますか? [y/N]: ").strip().lower()
     dl_zumen = ans == "y"
 
+    # 既存DBから物件番号セットを取得（PDF DL対象を絞るため）
+    existing_db = load_db(db_path)
+    existing_ids: set[str] = set()
+    if not existing_db.empty and "物件番号" in existing_db.columns:
+        existing_ids = set(existing_db["物件番号"].astype(str).str.strip())
+
     # ブラウザ起動・複数条件をループで取得
     scraper = REINSScraper(cfg)
-    scraped_by_condition = await scraper.run_manual_loop(dl_zumen=dl_zumen)
+    scraped_by_condition = await scraper.run_manual_loop(
+        dl_zumen=dl_zumen, existing_ids=existing_ids,
+    )
 
     if not scraped_by_condition:
         print("条件が1つも入力されませんでした。終了します。")
@@ -194,10 +202,17 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     ans = input("図面PDFをダウンロードして印刷しますか? [y/N]: ").strip().lower()
     dl_zumen = ans == "y"
 
+    # 既存DBから物件番号セットを取得（PDF DL対象を絞るため）
+    existing_db = load_db(db_path)
+    existing_ids: set[str] = set()
+    if not existing_db.empty and "物件番号" in existing_db.columns:
+        existing_ids = set(existing_db["物件番号"].astype(str).str.strip())
+
     scrape_mode = "evening" if mode == "half_daily" else "weekly"
     scraper = REINSScraper(cfg)
     scraped_by_condition = await scraper.run_after_login(
         search_conditions, run_mode=scrape_mode, dl_zumen=dl_zumen,
+        existing_ids=existing_ids,
     )
 
     if not any(props for _, props in scraped_by_condition):
