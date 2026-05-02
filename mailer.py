@@ -56,14 +56,17 @@ def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[st
     n_cand      = len(diff.get("candidates", []))
     n_confirmed = len(diff.get("confirmed", []))
     n_restored  = len(diff.get("restored", []))
+    n_zumen_add = len(diff.get("zumen_added", []))
 
     mode_label = "週次" if mode in ("weekly", "auto_weekly") else "日次"
 
     parts = [f"新規{n_new}件", f"価格変更{n_changed}件"]
+    if n_zumen_add:
+        parts.append(f"図面追加{n_zumen_add}件")
     if n_cand:
-        parts.append(f"取消候補{n_cand}件")
+        parts.append(f"公開停止の可能性がある物件{n_cand}件")
     if n_confirmed:
-        parts.append(f"取消確定{n_confirmed}件")
+        parts.append(f"公開停止物件{n_confirmed}件")
 
     subject = f"[REINS] {now:%m/%d} {mode_label} " + " / ".join(parts)
 
@@ -72,8 +75,11 @@ def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[st
         sections.append(_section("🆕 新規物件", diff["new"], color="#1a7340", border="#1a7340"))
     if diff.get("price_changed"):
         sections.append(_section("💰 価格変更", diff["price_changed"], color="#7a4f00", border="#e6ac00", show_old_price=True))
+    if diff.get("zumen_added"):
+        sections.append(_section("📋 図面が新たに付いた物件", diff["zumen_added"], color="#1a7340", border="#1a7340",
+                                 note="既存DBにあったが以前は図面なしだった物件に、図面が追加されました。今回ダウンロード・印刷対象です。"))
     if diff.get("candidates"):
-        sections.append(_section("⚠️ 取消の可能性あり（要確認）", diff["candidates"], color="#7a4f00", border="#ff9933",
+        sections.append(_section("⚠️ 公開停止の可能性あり（要確認）", diff["candidates"], color="#7a4f00", border="#ff9933",
                                  note="REINSから消えた物件です。電話等で確認し、まだあれば「戻す.bat」または Excel の状態カラムを「アクティブ」に書き換えてください。猶予期間内に戻さないと自動で成約・取消扱いになります。"))
     if diff.get("confirmed"):
         sections.append(_section("🔴 成約・取消確定", diff["confirmed"], color="#8b0000", border="#cc0000",
@@ -148,7 +154,7 @@ def _prop_row(p: dict, show_old_price: bool = False) -> str:
     old_col = ""
     if show_old_price:
         old = p.get("旧価格", "")
-        new = p.get("価格", "")
+        new = p.get("新価格", "")
         arrow = _price_arrow(old, new)
         old_col = f"<td {_TD_NUM}>{old}</td>"
         price_cell = f"<td {_TD_NUM}><b>{new}</b> {arrow}</td>"

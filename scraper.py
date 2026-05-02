@@ -47,6 +47,7 @@ class REINSScraper:
         self.wait_cond     = self.browser_cfg.get("wait_ms_between_conditions", 2500)
         self.skip_zumen    = False  # bootstrap モードでTrueにすると図面DLをスキップ
         self._existing_ids: set[str] = set()  # PDF DL前に既存物件をスキップする為のセット
+        self._existing_no_zumen: set[str] = set()  # 既存だが図面なしだった物件のID
         self._seen_ippan_keys: set[tuple] = set()  # 一般媒介の重複検知用
 
     async def run(
@@ -105,6 +106,7 @@ class REINSScraper:
         run_mode: str,
         dl_zumen: bool,
         existing_ids: set[str] | None = None,
+        existing_no_zumen_ids: set[str] | None = None,
     ) -> list[tuple[str, list[dict]]]:
         """
         半自動モード: ユーザーが手動でログインした後、スクリプトが各条件を自動巡回する。
@@ -119,6 +121,7 @@ class REINSScraper:
         """
         self.skip_zumen = not dl_zumen
         self._existing_ids = existing_ids or set()
+        self._existing_no_zumen = existing_no_zumen_ids or set()
         self._seen_ippan_keys.clear()
         results: list[tuple[str, list[dict]]] = []
 
@@ -195,7 +198,9 @@ class REINSScraper:
         return results
 
     async def run_manual_loop(
-        self, dl_zumen: bool, existing_ids: set[str] | None = None,
+        self, dl_zumen: bool,
+        existing_ids: set[str] | None = None,
+        existing_no_zumen_ids: set[str] | None = None,
     ) -> list[tuple[str, list[dict]]]:
         """
         ブラウザを1回だけ開き、ユーザーが複数条件を順に検索する。
@@ -214,6 +219,7 @@ class REINSScraper:
         """
         self.skip_zumen = not dl_zumen
         self._existing_ids = existing_ids or set()
+        self._existing_no_zumen = existing_no_zumen_ids or set()
         self._seen_ippan_keys.clear()
         results: list[tuple[str, list[dict]]] = []
 
@@ -619,12 +625,16 @@ class REINSScraper:
                 zumen_btn = await row.query_selector('button:has-text("図面")')
                 has_zumen = zumen_btn is not None
 
-                # PDF DL判定: skip_zumen=False かつ 既存DBになく、かつ一般媒介の重複でもない場合のみDL
+                # PDF DL判定:
+                #  skip_zumen=False かつ 図面ボタンあり かつ
+                #  (新規物件 or 既存だが図面が「なし」だったもの) かつ 一般媒介重複でない
                 pdf_path = ""
+                is_newly_figured = prop_id in self._existing_no_zumen
+                is_new_prop      = prop_id not in self._existing_ids
                 should_dl = (
                     not self.skip_zumen
                     and has_zumen
-                    and prop_id not in self._existing_ids
+                    and (is_new_prop or is_newly_figured)
                 )
                 if should_dl:
                     torihiki = col("取引態様")

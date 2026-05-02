@@ -100,14 +100,14 @@ async def run_loop(cfg: dict, mode: str) -> None:
 
     # 既存DBから物件番号セットを取得（PDF DL対象を絞るため）
     existing_db = load_db(db_path)
-    existing_ids: set[str] = set()
-    if not existing_db.empty and "物件番号" in existing_db.columns:
-        existing_ids = set(existing_db["物件番号"].astype(str).str.strip())
+    existing_ids, existing_no_zumen_ids = _get_existing_id_sets(existing_db)
 
     # ブラウザ起動・複数条件をループで取得
     scraper = REINSScraper(cfg)
     scraped_by_condition = await scraper.run_manual_loop(
-        dl_zumen=dl_zumen, existing_ids=existing_ids,
+        dl_zumen=dl_zumen,
+        existing_ids=existing_ids,
+        existing_no_zumen_ids=existing_no_zumen_ids,
     )
 
     if not scraped_by_condition:
@@ -143,7 +143,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
     # 図面PDFの処理（新規物件のみ印刷）
     if dl_zumen:
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(diff["new"], all_scraped, export_dir, print_cfg)
+        _handle_pdfs(diff["new"] + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     # メール通知
     diff_for_mail = {
@@ -152,6 +152,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
         "candidates":    candidates,        # 今回新たに取消候補入りしたもの
         "confirmed":     confirmed,         # 猶予切れで成約・取消確定したもの
         "restored":      diff["restored"],
+        "zumen_added":   diff.get("zumen_added", []),
     }
 
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
@@ -208,11 +209,9 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     ans = input("図面PDFをダウンロードして印刷しますか? [y/N]: ").strip().lower()
     dl_zumen = ans == "y"
 
-    # 既存DBから物件番号セットを取得（PDF DL対象を絞るため）
+    # 既存DBから物件番号セット（+ 図面なしIDセット）を取得
     existing_db = load_db(db_path)
-    existing_ids: set[str] = set()
-    if not existing_db.empty and "物件番号" in existing_db.columns:
-        existing_ids = set(existing_db["物件番号"].astype(str).str.strip())
+    existing_ids, existing_no_zumen_ids = _get_existing_id_sets(existing_db)
 
     scrape_mode = {
         "half_morning": "morning",
@@ -223,6 +222,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     scraped_by_condition = await scraper.run_after_login(
         search_conditions, run_mode=scrape_mode, dl_zumen=dl_zumen,
         existing_ids=existing_ids,
+        existing_no_zumen_ids=existing_no_zumen_ids,
     )
 
     if not any(props for _, props in scraped_by_condition):
@@ -252,7 +252,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
 
     if dl_zumen:
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(diff["new"], all_scraped, export_dir, print_cfg)
+        _handle_pdfs(diff["new"] + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     diff_for_mail = {
         "new":           diff["new"],
@@ -260,6 +260,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         "candidates":    candidates,
         "confirmed":     confirmed,
         "restored":      diff["restored"],
+        "zumen_added":   diff.get("zumen_added", []),
     }
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
     if has_change or cfg["notification"].get("send_daily_summary"):
@@ -368,7 +369,7 @@ async def run_auto(mode: str, cfg: dict) -> None:
 
     if mode in ("morning", "evening"):
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(diff["new"], all_scraped, export_dir, print_cfg)
+        _handle_pdfs(diff["new"] + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     if mode == "debug":
         _print_debug(diff, candidates, confirmed)
@@ -380,6 +381,7 @@ async def run_auto(mode: str, cfg: dict) -> None:
         "candidates":    candidates,
         "confirmed":     confirmed,
         "restored":      diff["restored"],
+        "zumen_added":   diff.get("zumen_added", []),
     }
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
     if has_change or cfg["notification"].get("send_daily_summary"):
@@ -391,6 +393,19 @@ async def run_auto(mode: str, cfg: dict) -> None:
 # ================================================================
 # 共通ユーティリティ
 # ================================================================
+
+def _get_existing_id_sets(db_df) -> tuple[set[str], set[str]]:
+    """既存DBから 全物件IDセット と 図面なしIDセット を取得。"""
+    existing_ids: set[str] = set()
+    no_zumen_ids: set[str] = set()
+    if db_df is None or db_df.empty or "物件番号" not in db_df.columns:
+        return existing_ids, no_zumen_ids
+    existing_ids = set(db_df["物件番号"].astype(str).str.strip())
+    if "図面" in db_df.columns:
+        mask = db_df["図面"].astype(str).str.strip() == "なし"
+        no_zumen_ids = set(db_df.loc[mask, "物件番号"].astype(str).str.strip())
+    return existing_ids, no_zumen_ids
+
 
 def _handle_pdfs(new_props: list[dict], all_scraped: list[dict], export_dir: str, print_cfg: dict | None = None) -> None:
     """新規物件のPDFだけ残して結合・印刷。それ以外は削除する。"""

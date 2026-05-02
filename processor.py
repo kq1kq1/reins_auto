@@ -112,7 +112,7 @@ def merge_batch(
       - diff: {new, price_changed, restored, found_ids}
       - new_log_rows: 変更ログに追加する行
     """
-    diff = {"new": [], "price_changed": [], "restored": [], "found_ids": set()}
+    diff = {"new": [], "price_changed": [], "restored": [], "zumen_added": [], "found_ids": set()}
     log_rows: list[dict] = []
 
     # 既存物件を物件番号でインデックス化
@@ -135,12 +135,16 @@ def merge_batch(
                 old_status = rec.get("状態", "")
                 old_price  = rec.get(PRICE_COL, "")
                 new_price  = prop.get(PRICE_COL, "")
+                old_zumen  = rec.get("図面", "")
+                new_zumen  = prop.get("図面", "")
 
                 # 既存物件 → 最終確認日更新・状態リセット・検出条件マージ
                 rec["最終確認日"] = today
                 rec["状態"]        = STATUS_ACTIVE
                 rec["取消候補日"] = ""
                 rec["検出条件"]   = _merge_conditions(rec.get("検出条件", ""), condition_name)
+                if new_zumen:
+                    rec["図面"] = new_zumen
 
                 # 価格変更検出
                 if old_price and new_price and _norm_price(old_price) != _norm_price(new_price):
@@ -154,6 +158,11 @@ def merge_batch(
                 if old_status == STATUS_CANDIDATE:
                     diff["restored"].append(prop)
                     log_rows.append(_log_row(now_str, condition_name, "取消候補から復活", prop))
+
+                # 図面が「なし」→「あり」に変わった
+                if old_zumen == "なし" and new_zumen == "あり":
+                    diff["zumen_added"].append(prop)
+                    log_rows.append(_log_row(now_str, condition_name, "図面追加", prop))
             else:
                 # 新規物件
                 new_rec = {col: prop.get(col, "") for col in COLUMNS}
