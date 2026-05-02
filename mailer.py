@@ -128,14 +128,18 @@ def _table_header(show_old_price: bool = False) -> str:
       <th {_TH}>物件番号</th>
       <th {_TH}>会社名</th>
       <th {_TH}>種別</th>
+      <th {_TH}>建物名</th>
       <th {_TH}>所在地</th>
+      <th {_TH}>沿線駅</th>
       <th {_TH}>交通</th>
       <th {_TH}>価格（万円）</th>
       {old_col}
-      <th {_TH}>間取り</th>
-      <th {_TH}>面積(㎡)</th>
       <th {_TH}>築年月</th>
-      <th {_TH}>登録日</th>
+      <th {_TH}>間取り</th>
+      <th {_TH}>土地面積</th>
+      <th {_TH}>建物面積</th>
+      <th {_TH}>専有面積</th>
+      <th {_TH}>所在階</th>
     </tr>"""
 
 
@@ -150,7 +154,6 @@ def _prop_row(p: dict, show_old_price: bool = False) -> str:
     else:
         price_cell = f"<td {_TD_NUM}>{p.get('価格', '')}</td>"
 
-    area = p.get("専有面積", "") or p.get("土地面積", "")
     grp  = p.get("グループID", "")
     grp_label = f' <span style="color:#1c4587;font-size:11px">[{grp}]</span>' if grp else ""
 
@@ -159,14 +162,18 @@ def _prop_row(p: dict, show_old_price: bool = False) -> str:
       <td {_TD}>{p.get("物件番号", "")}{grp_label}</td>
       <td {_TD}>{p.get("会社名", "")}</td>
       <td {_TD}>{p.get("物件種別", "")}</td>
+      <td {_TD}>{p.get("建物名", "")}</td>
       <td {_TD}>{p.get("所在地", "")}</td>
+      <td {_TD}>{p.get("沿線駅", "")}</td>
       <td {_TD}>{p.get("交通", "")}</td>
       {price_cell}
       {old_col}
-      <td {_TD}>{p.get("間取り", "")}</td>
-      <td {_TD_NUM}>{area}</td>
       <td {_TD}>{p.get("築年月", "")}</td>
-      <td {_TD}>{p.get("登録日", "")}</td>
+      <td {_TD}>{p.get("間取り", "")}</td>
+      <td {_TD_NUM}>{p.get("土地面積", "")}</td>
+      <td {_TD_NUM}>{p.get("建物面積", "")}</td>
+      <td {_TD_NUM}>{p.get("専有面積", "")}</td>
+      <td {_TD}>{p.get("所在階", "")}</td>
     </tr>"""
 
 
