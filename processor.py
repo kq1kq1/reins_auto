@@ -151,6 +151,7 @@ def merge_batch(
                     rec[PRICE_COL] = new_price
                     p = dict(prop)
                     p["旧価格"] = old_price
+                    p["新価格"] = new_price
                     diff["price_changed"].append(p)
                     log_rows.append(_log_row(now_str, condition_name, "価格変更", prop, old_price))
 
