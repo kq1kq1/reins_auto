@@ -184,7 +184,12 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
       half_daily  : ログイン手動・各条件を「当日」フィルタで自動検索
       half_weekly : ログイン手動・各条件を日付フィルタなしで自動検索 + 取消候補マーキング
     """
-    search_conditions = cfg["search_conditions"]
+    # 週次は専用条件があればそれを使う（なければ通常条件）
+    if mode == "half_weekly" and cfg.get("weekly_search_conditions"):
+        search_conditions = cfg["weekly_search_conditions"]
+    else:
+        search_conditions = cfg["search_conditions"]
+
     db_path     = cfg["storage"]["db_path"]
     export_dir  = cfg["storage"]["export_dir"]
     keep_days   = cfg["storage"].get("pdf_keep_days", 7)

@@ -11,6 +11,9 @@
     {"id": 50, "name": "江戸川区戸建て"}
   ],
 
+  "weekly_search_conditions": [
+  ],
+
   "storage": {
     "db_path":      "reins_db.xlsx",
     "export_dir":   "exports",
