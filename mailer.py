@@ -16,26 +16,32 @@ logger = logging.getLogger(__name__)
 
 
 def send_email(cfg: dict, subject: str, body_html: str) -> bool:
-    email_from    = str(cfg.get("email_from", ""))
-    email_to      = str(cfg.get("email_to", ""))
+    email_from    = str(cfg.get("email_from", "")).strip()
+    raw_to        = cfg.get("email_to", "")
     smtp_server   = cfg.get("smtp_server", "smtp.gmail.com")
     smtp_port     = cfg.get("smtp_port", 587)
     smtp_password = cfg.get("smtp_password", "")
 
-    if not all([email_from, email_to, smtp_password]):
+    # email_to は文字列でもリストでも受け付ける
+    if isinstance(raw_to, (list, tuple)):
+        to_list = [str(x).strip() for x in raw_to if str(x).strip()]
+    else:
+        # "a@x.com, b@y.com" カンマ区切り文字列にも対応
+        to_list = [s.strip() for s in str(raw_to).split(",") if s.strip()]
+
+    if not all([email_from, to_list, smtp_password]):
         logger.warning("メール設定が不完全です（config.jsonの notification セクションを確認）")
         return False
 
-    # body_html / subject に万が一listが混入してても落ちないように防御
     if not isinstance(body_html, str):
-        body_html = "\n".join(map(str, body_html)) if isinstance(body_html, (list, tuple)) else str(body_html)
+        body_html = str(body_html)
     if not isinstance(subject, str):
-        subject = " ".join(map(str, subject)) if isinstance(subject, (list, tuple)) else str(subject)
+        subject = str(subject)
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"]    = email_from
-    msg["To"]      = email_to
+    msg["To"]      = ", ".join(to_list)
     msg.set_content("HTMLメールクライアントで表示してください。")
     msg.add_alternative(body_html, subtype="html")
 
