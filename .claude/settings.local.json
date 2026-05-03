@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(\\(Get-Content \"C:\\\\Users\\\\user\\\\OneDrive\\\\ドキュメント\\\\Programs\\\\reins_auto\\\\processor.py\"\\).Count)"
-    ]
-  }
-}
