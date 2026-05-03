@@ -270,17 +270,26 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         state["half_morning_last_run"] = today
         save_state(state_path, state)
 
+    # グループ化された新規物件は最安1件だけを通知/印刷対象に絞る
+    new_filtered = _filter_cheapest_per_group(diff["new"])
+
+    # 週次：取消候補で「グループの最安だった」物件がいたら、次の最安を号棟チェンジとして通知
+    ridge_change: list[dict] = []
+    if mode == "half_weekly":
+        ridge_change = _detect_ridge_change(candidates, db_df)
+
     if dl_zumen:
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(diff["new"] + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
+        _handle_pdfs(new_filtered + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     diff_for_mail = {
-        "new":           diff["new"],
+        "new":           new_filtered,
         "price_changed": diff["price_changed"],
         "candidates":    candidates,
         "confirmed":     confirmed,
         "restored":      diff["restored"],
         "zumen_added":   diff.get("zumen_added", []),
+        "ridge_change":  ridge_change,
     }
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
     if has_change or cfg["notification"].get("send_daily_summary"):
@@ -437,6 +446,74 @@ async def run_auto(mode: str, cfg: dict) -> None:
 # ================================================================
 # 共通ユーティリティ
 # ================================================================
+
+def _price_num(s) -> float:
+    """価格文字列から数値を取り出す（取れなければ無限大）。"""
+    if s is None:
+        return float("inf")
+    m = re.search(r"(\d+(?:\.\d+)?)", str(s).replace(",", ""))
+    return float(m.group(1)) if m else float("inf")
+
+
+def _filter_cheapest_per_group(new_props: list[dict]) -> list[dict]:
+    """グループID付き物件は最安1件だけ残す（グループID無しは全件残す）。"""
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    ungrouped: list[dict] = []
+    for p in new_props:
+        gid = (p.get("グループID") or "").strip()
+        if gid:
+            groups[gid].append(p)
+        else:
+            ungrouped.append(p)
+
+    result = list(ungrouped)
+    for items in groups.values():
+        cheapest = min(items, key=lambda p: _price_num(p.get("価格", "")))
+        result.append(cheapest)
+    return result
+
+
+def _detect_ridge_change(candidates: list[dict], db_df) -> list[dict]:
+    """
+    取消候補となった物件と同じ「会社名+丁目+徒歩分」グループの中で、
+    まだアクティブな最安物件を「号棟チェンジ候補」として返す。
+    """
+    if db_df is None or db_df.empty or not candidates:
+        return []
+    from rules import _chome, _walk_min
+
+    active_mask = db_df["状態"].astype(str).str.strip() == "アクティブ"
+    active_df = db_df[active_mask]
+    if active_df.empty:
+        return []
+
+    seen_keys: set[tuple] = set()
+    result: list[dict] = []
+    for c in candidates:
+        company = (c.get("会社名") or "").strip()
+        if not company:
+            continue
+        addr = _chome(c.get("所在地", ""))
+        walk = _walk_min(c.get("交通", ""))
+        key = (company, addr, walk)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        same_group = active_df[
+            (active_df["会社名"].astype(str).str.strip() == company) &
+            (active_df["所在地"].astype(str).apply(_chome) == addr) &
+            (active_df["交通"].astype(str).apply(_walk_min) == walk)
+        ]
+        if same_group.empty:
+            continue
+
+        cheapest = min(same_group.to_dict("records"),
+                       key=lambda p: _price_num(p.get("価格", "")))
+        result.append(cheapest)
+    return result
+
 
 def _get_existing_id_sets(db_df) -> tuple[set[str], set[str]]:
     """既存DBから 全物件IDセット と 図面なしIDセット を取得。"""

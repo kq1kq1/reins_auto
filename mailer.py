@@ -70,12 +70,15 @@ def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[st
     n_confirmed = len(diff.get("confirmed", []))
     n_restored  = len(diff.get("restored", []))
     n_zumen_add = len(diff.get("zumen_added", []))
+    n_ridge     = len(diff.get("ridge_change", []))
 
     mode_label = "週次" if mode in ("weekly", "auto_weekly") else "日次"
 
     parts = [f"新規{n_new}件", f"価格変更{n_changed}件"]
     if n_zumen_add:
         parts.append(f"図面追加{n_zumen_add}件")
+    if n_ridge:
+        parts.append(f"号棟チェンジ{n_ridge}件")
     if n_cand:
         parts.append(f"公開停止の可能性がある物件{n_cand}件")
     if n_confirmed:
@@ -94,6 +97,9 @@ def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[st
     if diff.get("candidates"):
         sections.append(_section("⚠️ 公開停止の可能性あり（要確認）", diff["candidates"], color="#7a4f00", border="#ff9933",
                                  note="REINSから消えた物件です。電話等で確認し、まだあれば「戻す.bat」または Excel の状態カラムを「アクティブ」に書き換えてください。猶予期間内に戻さないと自動で成約・取消扱いになります。"))
+    if diff.get("ridge_change"):
+        sections.append(_section("🔁 号棟チェンジ", diff["ridge_change"], color="#1c4587", border="#5b9bd5",
+                                 note="同じ現場（会社名・住所・徒歩距離が一致）で公開停止の可能性ありになった物件があるため、現在グループ内で最安のアクティブ物件を表示しています。"))
     if diff.get("confirmed"):
         sections.append(_section("🔴 成約・取消確定", diff["confirmed"], color="#8b0000", border="#cc0000",
                                  note="猶予期間内に確認操作がなかったため、成約・取消シートに移動しました。"))

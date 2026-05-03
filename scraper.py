@@ -535,8 +535,11 @@ class REINSScraper:
     async def _parse_all_tabs_and_pages(
         self, page: Page, condition_name: str
     ) -> list[dict]:
-        """タブ（売マンション・売一戸建・売土地など）ごとに全ページを取得する。"""
+        """タブ（売マンション・売一戸建・売土地など）ごとに全ページを取得する。
+        REINSは複数物件種別あるとき各タブに同じ行が出る場合があるため、
+        条件ごとに物件番号の重複を除外する。"""
         all_props: list[dict] = []
+        self._seen_pids_in_condition: set[str] = set()
 
         tabs = await page.query_selector_all('a[role="tab"]')
         if not tabs:
@@ -623,6 +626,13 @@ class REINSScraper:
                     prop_id = _safe_get(texts, 3)
                 if not prop_id:
                     continue
+
+                # 同じ条件内で既にパース済みならスキップ（タブ間重複対策）
+                seen = getattr(self, "_seen_pids_in_condition", None)
+                if seen is not None:
+                    if prop_id in seen:
+                        continue
+                    seen.add(prop_id)
 
                 full_text = "\n".join(texts)
 
