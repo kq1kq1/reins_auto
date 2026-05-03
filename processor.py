@@ -7,6 +7,7 @@
   変更ログ       ... 全変更履歴
 """
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -451,3 +452,30 @@ def _apply_styles(db_path: str) -> None:
         wb.save(db_path)
     except Exception as e:
         logger.warning(f"スタイル適用エラー（無視）: {e}")
+
+
+# ----------------------------------------------------------------
+# 実行状態（最終実行日など）の永続化
+# ----------------------------------------------------------------
+
+def load_state(state_path: str) -> dict:
+    """状態ファイルを読み込む。なければ空dictを返す。"""
+    p = Path(state_path)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"state読込失敗（空として扱います）: {e}")
+        return {}
+
+
+def save_state(state_path: str, state: dict) -> None:
+    """状態ファイルを書き込む。"""
+    try:
+        Path(state_path).write_text(
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning(f"state保存失敗: {e}")

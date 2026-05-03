@@ -107,6 +107,7 @@ class REINSScraper:
         dl_zumen: bool,
         existing_ids: set[str] | None = None,
         existing_no_zumen_ids: set[str] | None = None,
+        from_date_override: datetime | None = None,
     ) -> list[tuple[str, list[dict]]]:
         """
         半自動モード: ユーザーが手動でログインした後、スクリプトが各条件を自動巡回する。
@@ -118,10 +119,12 @@ class REINSScraper:
           4. 全条件処理後、ブラウザを閉じる
 
         run_mode: "morning" / "evening" / "weekly"
+        from_date_override: morning時の開始日を上書き（前回実行日など）
         """
         self.skip_zumen = not dl_zumen
         self._existing_ids = existing_ids or set()
         self._existing_no_zumen = existing_no_zumen_ids or set()
+        self._from_date_override = from_date_override
         self._seen_ippan_keys.clear()
         results: list[tuple[str, list[dict]]] = []
 
@@ -481,9 +484,11 @@ class REINSScraper:
             ).first.check(force=True)
             await _human_wait(400, 800)
 
-            today     = datetime.now()
-            yesterday = today - timedelta(days=1)
-            await self._fill_date_range(page, from_date=yesterday, to_date=today)
+            today      = datetime.now()
+            override   = getattr(self, "_from_date_override", None)
+            from_date  = override if override else today - timedelta(days=1)
+            logger.info(f"  日付範囲: {from_date:%Y-%m-%d} 〜 {today:%Y-%m-%d}")
+            await self._fill_date_range(page, from_date=from_date, to_date=today)
 
         logger.debug(f"日付フィルター設定: {run_mode}")
 

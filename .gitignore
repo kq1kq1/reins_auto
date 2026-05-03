@@ -10,6 +10,9 @@ reins_db.xlsx
 *.log
 exports/
 
+# 実行状態（最終実行日など）
+state.json
+
 # デバッグ出力
 debug_*.html
 error_*.png

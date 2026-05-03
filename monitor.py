@@ -27,6 +27,7 @@ from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
     restore_candidates, confirm_removals, STATUS_CANDIDATE,
+    load_state, save_state,
 )
 from rules import apply_rules
 from mailer import send_email, build_summary_email
@@ -195,6 +196,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     export_dir  = cfg["storage"]["export_dir"]
     keep_days   = cfg["storage"].get("pdf_keep_days", 7)
     grace_days  = cfg["storage"].get("removal_grace_days", 3)
+    state_path  = cfg["storage"].get("state_path", "state.json")
     print_cfg   = cfg.get("print", {})
 
     cleanup_old_exports(export_dir, days=keep_days)
@@ -213,6 +215,18 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     existing_db = load_db(db_path)
     existing_ids, existing_no_zumen_ids = _get_existing_id_sets(existing_db)
 
+    # 半自動朝のみ：前回実行日からの範囲を計算
+    state = load_state(state_path)
+    from_date_override = None
+    if mode == "half_morning":
+        last = state.get("half_morning_last_run", "")
+        if last:
+            try:
+                from_date_override = datetime.strptime(last, "%Y-%m-%d")
+                logger.info(f"前回半自動朝実行日: {last} → 今日までの範囲で検索")
+            except ValueError:
+                logger.warning(f"state内の日付形式が不正: {last}（前日にフォールバック）")
+
     scrape_mode = {
         "half_morning": "morning",
         "half_daily":   "evening",
@@ -223,6 +237,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         search_conditions, run_mode=scrape_mode, dl_zumen=dl_zumen,
         existing_ids=existing_ids,
         existing_no_zumen_ids=existing_no_zumen_ids,
+        from_date_override=from_date_override,
     )
 
     if not any(props for _, props in scraped_by_condition):
@@ -249,6 +264,11 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     log_rows.extend(grace_logs)
 
     save_db(db_path, db_df, archive_df, log_rows)
+
+    # 半自動朝が成功したら state を今日に更新
+    if mode == "half_morning":
+        state["half_morning_last_run"] = today
+        save_state(state_path, state)
 
     if dl_zumen:
         all_scraped = [p for _, props in cleaned for p in props]
