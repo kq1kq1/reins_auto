@@ -529,27 +529,36 @@ def _get_existing_id_sets(db_df) -> tuple[set[str], set[str]]:
 
 
 def _handle_pdfs(new_props: list[dict], all_scraped: list[dict], export_dir: str, print_cfg: dict | None = None) -> None:
-    """新規物件のPDFだけ残して結合・印刷。それ以外は削除する。"""
+    """新規物件のPDFだけ残して結合・印刷。それ以外は削除する。
+    同じ物件番号のPDFが複数回DLされていた場合は1つだけ採用し、残りは削除する。"""
     new_ids  = {p.get("物件番号") for p in new_props}
-    new_pdfs = []
+    pid_to_pdf: dict[str, Path] = {}
 
     for prop in all_scraped:
         pdf_path = prop.get("_pdf_path", "")
         if not pdf_path:
             continue
         p = Path(pdf_path)
-        if prop.get("物件番号") in new_ids:
-            new_pdfs.append(p)
+        pid = prop.get("物件番号")
+        if pid in new_ids:
+            if pid in pid_to_pdf:
+                # 重複：すでに登録済みなのでこのファイルは削除
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            else:
+                pid_to_pdf[pid] = p
         else:
             try:
                 p.unlink(missing_ok=True)
             except Exception:
                 pass
 
-    if not new_pdfs:
+    if not pid_to_pdf:
         return
 
-    merged = merge_pdfs(new_pdfs, Path(export_dir))
+    merged = merge_pdfs(list(pid_to_pdf.values()), Path(export_dir))
     if merged:
         print_pdf(merged, print_cfg)
 

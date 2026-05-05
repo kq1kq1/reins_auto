@@ -49,6 +49,7 @@ class REINSScraper:
         self._existing_ids: set[str] = set()  # PDF DL前に既存物件をスキップする為のセット
         self._existing_no_zumen: set[str] = set()  # 既存だが図面なしだった物件のID
         self._seen_ippan_keys: set[tuple] = set()  # 一般媒介の重複検知用
+        self._dl_seen_pids: set[str] = set()  # 今回のrunで既にDL済みの物件番号
 
     async def run(
         self,
@@ -126,6 +127,7 @@ class REINSScraper:
         self._existing_no_zumen = existing_no_zumen_ids or set()
         self._from_date_override = from_date_override
         self._seen_ippan_keys.clear()
+        self._dl_seen_pids.clear()
         results: list[tuple[str, list[dict]]] = []
 
         async with async_playwright() as pw:
@@ -224,6 +226,7 @@ class REINSScraper:
         self._existing_ids = existing_ids or set()
         self._existing_no_zumen = existing_no_zumen_ids or set()
         self._seen_ippan_keys.clear()
+        self._dl_seen_pids.clear()
         results: list[tuple[str, list[dict]]] = []
 
         async with async_playwright() as pw:
@@ -642,14 +645,17 @@ class REINSScraper:
 
                 # PDF DL判定:
                 #  skip_zumen=False かつ 図面ボタンあり かつ
-                #  (新規物件 or 既存だが図面が「なし」だったもの) かつ 一般媒介重複でない
+                #  (新規物件 or 既存だが図面が「なし」だったもの) かつ
+                #  この実行で同じpidをまだDL済みでない かつ 一般媒介重複でない
                 pdf_path = ""
                 is_newly_figured = prop_id in self._existing_no_zumen
                 is_new_prop      = prop_id not in self._existing_ids
+                already_dl_run   = prop_id in self._dl_seen_pids
                 should_dl = (
                     not self.skip_zumen
                     and has_zumen
                     and (is_new_prop or is_newly_figured)
+                    and not already_dl_run
                 )
                 if should_dl:
                     torihiki = col("取引態様")
@@ -666,6 +672,8 @@ class REINSScraper:
 
                 if should_dl:
                     pdf_path = await self._download_zumen(page, zumen_btn, prop_id)
+                    if pdf_path:
+                        self._dl_seen_pids.add(prop_id)
 
                 prop = {
                     "物件番号":   prop_id,
