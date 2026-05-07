@@ -124,6 +124,45 @@ def merge_batch(
             if pid:
                 db_records[pid] = rec
 
+    # 同一物件キー → pid の逆引きインデックス（物件番号変更検知用）
+    identity_index: dict[tuple, str] = {}
+    for pid, rec in db_records.items():
+        ikey = _identity_key(rec)
+        if ikey is not None:
+            identity_index[ikey] = pid
+
+    def _apply_existing_update(rec: dict, prop: dict, condition_name: str) -> None:
+        """既存レコードに今回のスクレイプ結果を反映し、価格変更・復活・図面追加を検知する。"""
+        old_status = rec.get("状態", "")
+        old_price  = rec.get(PRICE_COL, "")
+        new_price  = prop.get(PRICE_COL, "")
+        old_zumen  = rec.get("図面", "")
+        new_zumen  = prop.get("図面", "")
+
+        rec["最終確認日"] = today
+        rec["状態"]        = STATUS_ACTIVE
+        rec["取消候補日"] = ""
+        rec["検出条件"]   = _merge_conditions(rec.get("検出条件", ""), condition_name)
+        if new_zumen:
+            rec["図面"] = new_zumen
+
+        if old_price and new_price and _norm_price(old_price) != _norm_price(new_price):
+            rec[PRICE_COL] = new_price
+            p = dict(prop)
+            p["旧価格"] = old_price
+            p["新価格"] = new_price
+            diff["price_changed"].append(p)
+            log_rows.append(_log_row(now_str, condition_name, "価格変更", prop, old_price))
+
+        if old_status == STATUS_CANDIDATE:
+            diff["restored"].append(prop)
+            log_rows.append(_log_row(now_str, condition_name, "取消候補から復活", prop))
+
+        if old_zumen == "なし" and new_zumen == "あり":
+            diff["zumen_added"].append(prop)
+            log_rows.append(_log_row(now_str, condition_name, "図面追加", prop))
+
+    pid_renewed = 0
     for condition_name, props in scraped_by_condition:
         for prop in props:
             pid = str(prop.get(ID_COL, "")).strip()
@@ -132,55 +171,48 @@ def merge_batch(
             diff["found_ids"].add(pid)
 
             if pid in db_records:
-                rec = db_records[pid]
-                old_status = rec.get("状態", "")
-                old_price  = rec.get(PRICE_COL, "")
-                new_price  = prop.get(PRICE_COL, "")
-                old_zumen  = rec.get("図面", "")
-                new_zumen  = prop.get("図面", "")
+                # 物件番号で既存ヒット
+                _apply_existing_update(db_records[pid], prop, condition_name)
+                continue
 
-                # 既存物件 → 最終確認日更新・状態リセット・検出条件マージ
-                rec["最終確認日"] = today
-                rec["状態"]        = STATUS_ACTIVE
-                rec["取消候補日"] = ""
-                rec["検出条件"]   = _merge_conditions(rec.get("検出条件", ""), condition_name)
-                if new_zumen:
-                    rec["図面"] = new_zumen
+            # 物件番号は新規だが、同一物件キーで既存にヒットしないか確認（再登録検知）
+            ikey = _identity_key(prop)
+            if ikey is not None and ikey in identity_index:
+                old_pid = identity_index[ikey]
+                rec = db_records.pop(old_pid)
 
-                # 価格変更検出
-                if old_price and new_price and _norm_price(old_price) != _norm_price(new_price):
-                    rec[PRICE_COL] = new_price
-                    p = dict(prop)
-                    p["旧価格"] = old_price
-                    p["新価格"] = new_price
-                    diff["price_changed"].append(p)
-                    log_rows.append(_log_row(now_str, condition_name, "価格変更", prop, old_price))
+                # 物件番号を新pidに付け替え、その他の更新は通常通り
+                rec[ID_COL] = pid
+                _apply_existing_update(rec, prop, condition_name)
 
-                # 取消候補からの復活
-                if old_status == STATUS_CANDIDATE:
-                    diff["restored"].append(prop)
-                    log_rows.append(_log_row(now_str, condition_name, "取消候補から復活", prop))
+                db_records[pid] = rec
+                identity_index[ikey] = pid
 
-                # 図面が「なし」→「あり」に変わった
-                if old_zumen == "なし" and new_zumen == "あり":
-                    diff["zumen_added"].append(prop)
-                    log_rows.append(_log_row(now_str, condition_name, "図面追加", prop))
-            else:
-                # 新規物件
-                new_rec = {col: prop.get(col, "") for col in COLUMNS}
-                new_rec["検出条件"]   = condition_name
-                new_rec["状態"]        = STATUS_ACTIVE
-                new_rec["取消候補日"] = ""
-                new_rec["初回取得日"] = today
-                new_rec["最終確認日"] = today
-                db_records[pid] = new_rec
-                diff["new"].append(prop)
-                log_rows.append(_log_row(now_str, condition_name, "新規登録", prop))
+                # 変更ログには「物件番号変更」を残す（旧価格カラムに旧pidを格納）
+                log_rows.append(_log_row(
+                    now_str, condition_name, "物件番号変更", prop, old_pid
+                ))
+                pid_renewed += 1
+                continue
+
+            # 真の新規物件
+            new_rec = {col: prop.get(col, "") for col in COLUMNS}
+            new_rec["検出条件"]   = condition_name
+            new_rec["状態"]        = STATUS_ACTIVE
+            new_rec["取消候補日"] = ""
+            new_rec["初回取得日"] = today
+            new_rec["最終確認日"] = today
+            db_records[pid] = new_rec
+            if ikey is not None:
+                identity_index[ikey] = pid
+            diff["new"].append(prop)
+            log_rows.append(_log_row(now_str, condition_name, "新規登録", prop))
 
     new_df = pd.DataFrame(list(db_records.values()), columns=COLUMNS)
     logger.info(
         f"マージ完了 → 新規:{len(diff['new'])} "
-        f"価格変更:{len(diff['price_changed'])} 復活:{len(diff['restored'])}"
+        f"価格変更:{len(diff['price_changed'])} 復活:{len(diff['restored'])} "
+        f"物件番号変更:{pid_renewed}"
     )
     return new_df, diff, log_rows
 
@@ -397,6 +429,40 @@ def _merge_conditions(existing: str, new_cond: str) -> str:
     if new_cond and new_cond not in parts:
         parts.append(new_cond)
     return ", ".join(parts)
+
+
+def _norm_num(s) -> str:
+    """数値文字列を正規化（72.40 → 72.4、空白・単位除去）。"""
+    s = re.sub(r"[\s,、　円万㎡m2平米]", "", str(s or "")).strip()
+    if not s:
+        return ""
+    try:
+        return f"{float(s):g}"
+    except ValueError:
+        return s
+
+
+def _identity_key(rec: dict) -> tuple | None:
+    """
+    物件を一意識別するキー（物件番号・価格を除く）。
+    会社名と所在地のどちらかが欠落していたら識別できないので None を返す。
+    """
+    company = str(rec.get("会社名") or "").strip()
+    addr    = str(rec.get("所在地") or "").strip().replace("　", " ")
+    if not company or not addr:
+        return None
+    return (
+        company,
+        str(rec.get("物件種別") or "").strip(),
+        addr,
+        str(rec.get("建物名") or "").strip(),
+        str(rec.get("所在階") or "").strip(),
+        str(rec.get("間取り") or "").strip(),
+        _norm_num(rec.get("専有面積")),
+        _norm_num(rec.get("建物面積")),
+        _norm_num(rec.get("土地面積")),
+        str(rec.get("築年月") or "").strip(),
+    )
 
 
 def _log_row(now: str, cond: str, change: str, prop: dict, old_price: str = "") -> dict:
