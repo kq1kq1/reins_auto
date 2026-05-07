@@ -31,3 +31,4 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/
+tmp_*.txt
