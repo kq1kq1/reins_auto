@@ -452,25 +452,38 @@ def _norm_num(s) -> str:
         return s
 
 
+def _norm_text(s) -> str:
+    """文字列を正規化（空白除去）。識別キーで表記ゆれを吸収する用途。"""
+    return re.sub(r"\s+", "", str(s or "")).replace("　", "").strip()
+
+
+def _norm_type(s) -> str:
+    """物件種別を正規化。"中古マンション"・"新築マンション" → "マンション" など。"""
+    t = _norm_text(s)
+    t = re.sub(r"^(中古|新築|売|新)", "", t)
+    return t
+
+
 def _identity_key(rec: dict) -> tuple | None:
     """
     物件を一意識別するキー（物件番号・価格・会社名を除く）。
     所在地が無いと識別できないので None を返す。
     会社名は含めないので、別会社が同じ物件を再登録した場合も同一物件と判定する。
+    物件種別は中古/新築の差を無視。所在地・建物名は空白を除いて表記ゆれを吸収。
     """
-    addr = str(rec.get("所在地") or "").strip().replace("　", " ")
+    addr = _norm_text(rec.get("所在地"))
     if not addr:
         return None
     return (
-        str(rec.get("物件種別") or "").strip(),
+        _norm_type(rec.get("物件種別")),
         addr,
-        str(rec.get("建物名") or "").strip(),
-        str(rec.get("所在階") or "").strip(),
-        str(rec.get("間取り") or "").strip(),
+        _norm_text(rec.get("建物名")),
+        _norm_text(rec.get("所在階")),
+        _norm_text(rec.get("間取り")),
         _norm_num(rec.get("専有面積")),
         _norm_num(rec.get("建物面積")),
         _norm_num(rec.get("土地面積")),
-        str(rec.get("築年月") or "").strip(),
+        _norm_text(rec.get("築年月")),
     )
 
 

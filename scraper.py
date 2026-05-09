@@ -611,10 +611,16 @@ class REINSScraper:
         for ri, row in enumerate(rows):
             try:
                 # 1回のJS evaluateで全セルテキストを一括取得（高速化）
+                # 非表示セル（display:none / visibility:hidden）は空に置き換えてインデックスは保持
                 texts = await row.evaluate(
                     """(el) => {
                         const cells = el.querySelectorAll('.p-table-body-item, td, [class*="body-item"]');
-                        return Array.from(cells).map(c => (c.innerText || '').replace(/\\u3000/g, ' '));
+                        return Array.from(cells).map(c => {
+                            if (c.offsetParent === null) return '';
+                            const cs = window.getComputedStyle(c);
+                            if (cs.visibility === 'hidden' || cs.display === 'none') return '';
+                            return (c.innerText || '').replace(/\\u3000/g, ' ');
+                        });
                     }"""
                 )
                 if not texts or len(texts) < 8:
@@ -729,7 +735,9 @@ class REINSScraper:
         return props
 
     async def _build_header_map(self, page: Page) -> dict[str, int]:
-        """ヘッダー行から「列名 → セルインデックス」のマップを作る（JS一括取得）。"""
+        """ヘッダー行から「列名 → セルインデックス」のマップを作る。
+        REINSは別タブ用のヘッダーもDOMに存在しCSSで非表示にしているため、
+        offsetParent と visibility で表示中のものだけを採用する。"""
         for sel in (
             '.p-table-header-row .p-table-header-item',
             '.p-table-header-item',
@@ -738,8 +746,12 @@ class REINSScraper:
         ):
             try:
                 texts = await page.evaluate(
-                    """(s) => Array.from(document.querySelectorAll(s))
-                          .map(e => (e.innerText || '').trim().replace(/\\u3000/g, ' '))""",
+                    """(s) => Array.from(document.querySelectorAll(s)).map(e => {
+                        if (e.offsetParent === null) return '';
+                        const cs = window.getComputedStyle(e);
+                        if (cs.visibility === 'hidden' || cs.display === 'none') return '';
+                        return (e.innerText || '').trim().replace(/\\u3000/g, ' ');
+                    })""",
                     sel,
                 )
             except Exception:
