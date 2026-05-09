@@ -553,23 +553,24 @@ class REINSScraper:
             # 件数0のタブはスキップ（"(0件)" or "(0)" のみマッチ。"(40件)"等は除外）
             if re.search(r'\(\s*0\s*(件)?\s*\)', tab_text):
                 continue
+            tab_type = _tab_type_from_text(tab_text)
             await _human_wait()
             await tab.click()
             await page.wait_for_load_state("networkidle")
             await _human_wait(500, 1000)
 
-            tab_props = await self._parse_all_pages(page, condition_name)
+            tab_props = await self._parse_all_pages(page, condition_name, tab_type=tab_type)
             logger.info(f"    タブ「{tab_text}」: {len(tab_props)}件")
             all_props.extend(tab_props)
 
         return all_props
 
-    async def _parse_all_pages(self, page: Page, condition_name: str) -> list[dict]:
+    async def _parse_all_pages(self, page: Page, condition_name: str, tab_type: str = "") -> list[dict]:
         props    = []
         page_num = 1
 
         while True:
-            on_page = await self._parse_result_page(page, condition_name)
+            on_page = await self._parse_result_page(page, condition_name, tab_type=tab_type)
             props.extend(on_page)
 
             has_next = await self._go_next_page(page)
@@ -583,11 +584,13 @@ class REINSScraper:
 
         return props
 
-    async def _parse_result_page(self, page: Page, condition_name: str) -> list[dict]:
+    async def _parse_result_page(self, page: Page, condition_name: str, tab_type: str = "") -> list[dict]:
         """
         検索結果1ページ分をパースする。
         ヘッダー行から列名→インデックスのマップを動的に作って取得するので、
         物件種別（マンション・戸建・土地）が違っても自動対応する。
+        tab_type が指定されている場合、行の物件種目がそれと一致しないものはスキップ
+        （戸建+土地の混在検索でタブ別に違う列レイアウトを正しく扱うため）。
         """
         today = datetime.now().strftime("%Y-%m-%d")
         props = []
@@ -603,17 +606,21 @@ class REINSScraper:
             logger.warning(f"結果行が見つかりません → {fname} を確認してください")
             return []
 
-        logger.info(f"  検出行数: {len(rows)}  ヘッダー: {len(header_map)}列")
+        logger.info(f"  検出行数: {len(rows)}  ヘッダー: {len(header_map)}列  タブ:{tab_type or '-'}")
 
         for ri, row in enumerate(rows):
             try:
-                cells = await row.query_selector_all('.p-table-body-item, td, [class*="body-item"]')
-                if len(cells) < 8:
+                # 1回のJS evaluateで全セルテキストを一括取得（高速化）
+                texts = await row.evaluate(
+                    """(el) => {
+                        const cells = el.querySelectorAll('.p-table-body-item, td, [class*="body-item"]');
+                        return Array.from(cells).map(c => (c.innerText || '').replace(/\\u3000/g, ' '));
+                    }"""
+                )
+                if not texts or len(texts) < 8:
                     if ri == 0:
-                        logger.warning(f"  セル数が想定より少ない: {len(cells)}")
+                        logger.warning(f"  セル数が想定より少ない: {len(texts) if texts else 0}")
                     continue
-
-                texts = [await _cell_text(cells, i) for i in range(len(cells))]
 
                 def col(name: str, *aliases: str) -> str:
                     """列名（または別名）でテキスト取得。"""
@@ -622,6 +629,12 @@ class REINSScraper:
                         if idx is not None and idx < len(texts):
                             return texts[idx].replace("\n", " ").strip()
                     return ""
+
+                # タブ種別と物件種目が一致しなければスキップ（列レイアウト違いによる誤読防止）
+                if tab_type:
+                    type_text = col("物件種目") or _safe_get(texts, 4)
+                    if not _row_matches_tab(type_text, tab_type):
+                        continue
 
                 prop_id = col("物件番号")
                 if not prop_id:
@@ -716,26 +729,29 @@ class REINSScraper:
         return props
 
     async def _build_header_map(self, page: Page) -> dict[str, int]:
-        """ヘッダー行から「列名 → セルインデックス」のマップを作る。"""
-        header_map: dict[str, int] = {}
+        """ヘッダー行から「列名 → セルインデックス」のマップを作る（JS一括取得）。"""
         for sel in (
             '.p-table-header-row .p-table-header-item',
             '.p-table-header-item',
             '[class*="table-header-item"]',
             'th',
         ):
-            headers = await page.query_selector_all(sel)
-            if headers:
-                for i, h in enumerate(headers):
-                    try:
-                        t = (await h.inner_text()).strip().replace("　", " ")
-                        if t and t not in header_map:
-                            header_map[t] = i
-                    except Exception:
-                        continue
+            try:
+                texts = await page.evaluate(
+                    """(s) => Array.from(document.querySelectorAll(s))
+                          .map(e => (e.innerText || '').trim().replace(/\\u3000/g, ' '))""",
+                    sel,
+                )
+            except Exception:
+                texts = []
+            if texts:
+                header_map: dict[str, int] = {}
+                for i, t in enumerate(texts):
+                    if t and t not in header_map:
+                        header_map[t] = i
                 if header_map:
-                    break
-        return header_map
+                    return header_map
+        return {}
 
     async def _find_result_rows(self, page: Page) -> list:
         """検索結果の行を複数セレクタで探す（REINS構造変化への耐性）。"""
@@ -863,6 +879,32 @@ def _extract_company(cell_text: str) -> str:
         if digit_ratio < 0.5:
             return line
     return cell_text.split("\n")[0].strip()
+
+
+def _tab_type_from_text(tab_text: str) -> str:
+    """タブ表示テキストから物件種別を抽出する（マンション/戸建/土地）。"""
+    t = tab_text or ""
+    if "マンション" in t:
+        return "マンション"
+    if "戸建" in t:
+        return "戸建"
+    if "土地" in t:
+        return "土地"
+    return ""
+
+
+def _row_matches_tab(type_text: str, tab_type: str) -> bool:
+    """行の物件種目テキストがタブ種別と一致するか判定する。"""
+    if not tab_type:
+        return True
+    t = type_text or ""
+    if tab_type == "マンション":
+        return "マンション" in t
+    if tab_type == "戸建":
+        return ("戸建" in t) or ("一戸建" in t)
+    if tab_type == "土地":
+        return ("土地" in t) or ("売地" in t)
+    return True
 
 
 def _chome(addr: str) -> str:

@@ -180,9 +180,13 @@ def merge_batch(
             if ikey is not None and ikey in identity_index:
                 old_pid = identity_index[ikey]
                 rec = db_records.pop(old_pid)
+                old_company = rec.get("会社名", "")
+                new_company = prop.get("会社名", "")
 
-                # 物件番号を新pidに付け替え、その他の更新は通常通り
+                # 物件番号と会社名を最新に更新（会社が変わっていても同一物件扱い）
                 rec[ID_COL] = pid
+                if new_company:
+                    rec["会社名"] = new_company
                 _apply_existing_update(rec, prop, condition_name)
 
                 db_records[pid] = rec
@@ -192,6 +196,10 @@ def merge_batch(
                 log_rows.append(_log_row(
                     now_str, condition_name, "物件番号変更", prop, old_pid
                 ))
+                if new_company and old_company and new_company != old_company:
+                    log_rows.append(_log_row(
+                        now_str, condition_name, "会社名変更", prop, old_company
+                    ))
                 pid_renewed += 1
                 continue
 
@@ -444,15 +452,14 @@ def _norm_num(s) -> str:
 
 def _identity_key(rec: dict) -> tuple | None:
     """
-    物件を一意識別するキー（物件番号・価格を除く）。
-    会社名と所在地のどちらかが欠落していたら識別できないので None を返す。
+    物件を一意識別するキー（物件番号・価格・会社名を除く）。
+    所在地が無いと識別できないので None を返す。
+    会社名は含めないので、別会社が同じ物件を再登録した場合も同一物件と判定する。
     """
-    company = str(rec.get("会社名") or "").strip()
-    addr    = str(rec.get("所在地") or "").strip().replace("　", " ")
-    if not company or not addr:
+    addr = str(rec.get("所在地") or "").strip().replace("　", " ")
+    if not addr:
         return None
     return (
-        company,
         str(rec.get("物件種別") or "").strip(),
         addr,
         str(rec.get("建物名") or "").strip(),
