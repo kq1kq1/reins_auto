@@ -116,20 +116,17 @@ def merge_batch(
     diff = {"new": [], "price_changed": [], "restored": [], "zumen_added": [], "found_ids": set()}
     log_rows: list[dict] = []
 
-    # 既存物件を物件番号でインデックス化
-    db_records: dict[str, dict] = {}
-    if not db_df.empty:
-        for rec in db_df.to_dict("records"):
-            pid = str(rec.get(ID_COL, "")).strip()
-            if pid:
-                db_records[pid] = rec
-
-    # 同一物件キー → pid の逆引きインデックス（物件番号変更検知用）
-    identity_index: dict[tuple, str] = {}
-    for pid, rec in db_records.items():
+    # DBの並び順を保つためレコードはリストで持ち、pid→index のマップで参照する
+    records: list[dict] = [] if db_df.empty else db_df.to_dict("records")
+    pid_to_idx: dict[str, int] = {}
+    identity_to_idx: dict[tuple, int] = {}
+    for i, rec in enumerate(records):
+        pid = str(rec.get(ID_COL, "")).strip()
+        if pid:
+            pid_to_idx[pid] = i
         ikey = _identity_key(rec)
         if ikey is not None:
-            identity_index[ikey] = pid
+            identity_to_idx[ikey] = i
 
     def _apply_existing_update(rec: dict, prop: dict, condition_name: str) -> None:
         """既存レコードに今回のスクレイプ結果を反映し、価格変更・復活・図面追加を検知する。"""
@@ -170,27 +167,30 @@ def merge_batch(
                 continue
             diff["found_ids"].add(pid)
 
-            if pid in db_records:
-                # 物件番号で既存ヒット
-                _apply_existing_update(db_records[pid], prop, condition_name)
+            if pid in pid_to_idx:
+                # 物件番号で既存ヒット → 位置はそのまま更新
+                _apply_existing_update(records[pid_to_idx[pid]], prop, condition_name)
                 continue
 
             # 物件番号は新規だが、同一物件キーで既存にヒットしないか確認（再登録検知）
             ikey = _identity_key(prop)
-            if ikey is not None and ikey in identity_index:
-                old_pid = identity_index[ikey]
-                rec = db_records.pop(old_pid)
+            if ikey is not None and ikey in identity_to_idx:
+                idx = identity_to_idx[ikey]
+                rec = records[idx]
+                old_pid     = rec.get(ID_COL, "")
                 old_company = rec.get("会社名", "")
                 new_company = prop.get("会社名", "")
 
-                # 物件番号と会社名を最新に更新（会社が変わっていても同一物件扱い）
+                # 物件番号と会社名を最新に更新（位置は固定）
                 rec[ID_COL] = pid
                 if new_company:
                     rec["会社名"] = new_company
                 _apply_existing_update(rec, prop, condition_name)
 
-                db_records[pid] = rec
-                identity_index[ikey] = pid
+                # インデックスのpid参照を更新（位置は維持）
+                if old_pid in pid_to_idx:
+                    del pid_to_idx[old_pid]
+                pid_to_idx[pid] = idx
 
                 # 変更ログには「物件番号変更」を残す（旧価格カラムに旧pidを格納）
                 log_rows.append(_log_row(
@@ -210,13 +210,15 @@ def merge_batch(
             new_rec["取消候補日"] = ""
             new_rec["初回取得日"] = today
             new_rec["最終確認日"] = today
-            db_records[pid] = new_rec
+            records.append(new_rec)
+            new_idx = len(records) - 1
+            pid_to_idx[pid] = new_idx
             if ikey is not None:
-                identity_index[ikey] = pid
+                identity_to_idx[ikey] = new_idx
             diff["new"].append(prop)
             log_rows.append(_log_row(now_str, condition_name, "新規登録", prop))
 
-    new_df = pd.DataFrame(list(db_records.values()), columns=COLUMNS)
+    new_df = pd.DataFrame(records, columns=COLUMNS)
     logger.info(
         f"マージ完了 → 新規:{len(diff['new'])} "
         f"価格変更:{len(diff['price_changed'])} 復活:{len(diff['restored'])} "
