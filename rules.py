@@ -14,10 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 def apply_rules(props: list[dict]) -> list[dict]:
+    """1条件分のスクレイプ結果に対するルール適用。
+    一般媒介の重複除外のみここで行う。
+    同一現場グルーピングは検索条件をまたいで行う必要があるため merge_batch で処理する。"""
     before = len(props)
     props = _remove_ippan_duplicates(props)
-    props = _mark_same_site_groups(props)
-    logger.info(f"ルール適用: {before}件 → {len(props)}件 （グループ付与済み）")
+    logger.info(f"ルール適用: {before}件 → {len(props)}件")
     return props
 
 

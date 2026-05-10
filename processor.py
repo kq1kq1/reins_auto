@@ -116,6 +116,16 @@ def merge_batch(
     diff = {"new": [], "price_changed": [], "restored": [], "zumen_added": [], "found_ids": set()}
     log_rows: list[dict] = []
 
+    # 全条件の物件を集めて、検索条件をまたいで会社名+丁目+徒歩分で
+    # グループID を付け直す（同じ現場が条件をまたいで分割されてもまとめる）
+    from rules import _mark_same_site_groups
+    all_scraped_flat: list[dict] = []
+    for _, props in scraped_by_condition:
+        for p in props:
+            p["グループID"] = ""
+            all_scraped_flat.append(p)
+    _mark_same_site_groups(all_scraped_flat)
+
     # DBの並び順を保つためレコードはリストで持ち、pid→index のマップで参照する
     records: list[dict] = [] if db_df.empty else db_df.to_dict("records")
     pid_to_idx: dict[str, int] = {}

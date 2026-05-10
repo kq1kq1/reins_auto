@@ -271,8 +271,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         save_state(state_path, state)
 
     # グループ化された新規物件は最安1件だけを通知/印刷対象に絞る
-    # 全条件をまたいで再グループ化してから最安だけ残す（クロスコンディション対応）
-    _regroup_globally(diff["new"])
+    # グループ化は merge_batch で全条件まとめて済んでいる（条件をまたいで一意なグループID）
     new_filtered = _filter_cheapest_per_group(diff["new"])
 
     # 週次：取消候補で「グループの最安だった」物件がいたら、次の最安を号棟チェンジとして通知
