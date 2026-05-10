@@ -271,6 +271,8 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         save_state(state_path, state)
 
     # グループ化された新規物件は最安1件だけを通知/印刷対象に絞る
+    # 全条件をまたいで再グループ化してから最安だけ残す（クロスコンディション対応）
+    _regroup_globally(diff["new"])
     new_filtered = _filter_cheapest_per_group(diff["new"])
 
     # 週次：取消候補で「グループの最安だった」物件がいたら、次の最安を号棟チェンジとして通知
@@ -456,7 +458,10 @@ def _price_num(s) -> float:
 
 
 def _filter_cheapest_per_group(new_props: list[dict]) -> list[dict]:
-    """グループID付き物件は最安1件だけ残す（グループID無しは全件残す）。"""
+    """
+    グループID付き物件は最安1件だけ残す（グループID無しは全件残す）。
+    呼び出し前に必ず _regroup_globally() でクロスコンディションのグループ再計算を行うこと。
+    """
     from collections import defaultdict
     groups: dict[str, list[dict]] = defaultdict(list)
     ungrouped: list[dict] = []
@@ -472,6 +477,18 @@ def _filter_cheapest_per_group(new_props: list[dict]) -> list[dict]:
         cheapest = min(items, key=lambda p: _price_num(p.get("価格", "")))
         result.append(cheapest)
     return result
+
+
+def _regroup_globally(props: list[dict]) -> list[dict]:
+    """
+    新規物件全体（複数条件をまたいで集計済み）を会社名+所在地丁目+徒歩分で
+    再グループ化する。条件ごとの古いグループIDは破棄。
+    """
+    from rules import _mark_same_site_groups
+    for p in props:
+        p["グループID"] = ""
+    _mark_same_site_groups(props)
+    return props
 
 
 def _detect_ridge_change(candidates: list[dict], db_df) -> list[dict]:
