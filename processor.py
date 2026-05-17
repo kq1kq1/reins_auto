@@ -293,6 +293,99 @@ def merge_batch(
 
 
 # ----------------------------------------------------------------
+# クリーンアップ: 既存DBに対する一括メンテナンス
+# ----------------------------------------------------------------
+
+def cleanup_db(db_path: str) -> dict:
+    """
+    既存DBの一括メンテナンス。
+    1. グループID をグローバルに再計算
+    2. identity が重複しているアクティブ行を統合（最古を残し、残りはアーカイブへ）
+
+    バックアップは monitor.run_cleanup 側で作る前提。
+
+    Returns: 統計情報 dict
+    """
+    db_df      = load_db(db_path)
+    archive_df = load_archive(db_path)
+    if db_df.empty:
+        return {"active_before": 0, "active_after": 0, "merged": 0, "regrouped_count": 0}
+
+    today   = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    records = db_df.to_dict("records")
+    active_before = sum(1 for r in records if r.get("状態", "") == STATUS_ACTIVE)
+
+    # ── 重複統合 ──
+    # identity が同じアクティブ行が複数あったら、最古（初回取得日が一番古い）を残す
+    from collections import defaultdict
+    ident_groups: dict[tuple, list[int]] = defaultdict(list)
+    for i, rec in enumerate(records):
+        if rec.get("状態", "") != STATUS_ACTIVE:
+            continue
+        ikey = _identity_key(rec)
+        if ikey is not None:
+            ident_groups[ikey].append(i)
+
+    merged_count = 0
+    archive_records = archive_df.to_dict("records") if not archive_df.empty else []
+    log_rows: list[dict] = []
+    to_archive_indices: set[int] = set()
+
+    for ikey, idxs in ident_groups.items():
+        if len(idxs) < 2:
+            continue
+        # 初回取得日昇順でソート → 最初のものをkeeperにする
+        idxs_sorted = sorted(idxs, key=lambda i: str(records[i].get("初回取得日", "9999-99-99")))
+        keeper = idxs_sorted[0]
+        # keeper に他のレコードの検出条件をマージする
+        for dup in idxs_sorted[1:]:
+            r = records[dup]
+            records[keeper]["検出条件"] = _merge_conditions(
+                records[keeper].get("検出条件", ""),
+                r.get("検出条件", "")
+            )
+            # 残りはアーカイブへ（成約・取消ではなく「重複統合」として残す）
+            arch = {col: r.get(col, "") for col in COLUMNS}
+            arch["成約・取消日"] = today + " (重複統合)"
+            archive_records.append(arch)
+            log_rows.append(_log_row(
+                now_str, r.get("検出条件", ""), "重複統合", r, str(records[keeper].get(ID_COL, ""))
+            ))
+            to_archive_indices.add(dup)
+            merged_count += 1
+
+    if to_archive_indices:
+        records = [r for i, r in enumerate(records) if i not in to_archive_indices]
+
+    # ── グループID をグローバル再計算 ──
+    from rules import _mark_same_site_groups
+    active_only = [r for r in records if r.get("状態", "") == STATUS_ACTIVE]
+    for r in active_only:
+        r["グループID"] = ""
+    _mark_same_site_groups(active_only)
+    # active_only の dict 参照は records と共有してるので records 側も更新済み
+
+    regrouped_count = sum(1 for r in active_only if r.get("グループID"))
+    active_after = len(active_only)
+
+    new_db_df      = pd.DataFrame(records, columns=COLUMNS)
+    new_archive_df = (
+        pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
+        if archive_records else pd.DataFrame(columns=REMOVED_COLUMNS)
+    )
+    save_db(db_path, new_db_df, new_archive_df, log_rows)
+
+    return {
+        "active_before":   active_before,
+        "active_after":    active_after,
+        "merged":          merged_count,
+        "regrouped_count": regrouped_count,
+    }
+
+
+# ----------------------------------------------------------------
 # 週次: 取消候補マーキング
 # ----------------------------------------------------------------
 
