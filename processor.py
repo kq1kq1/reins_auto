@@ -10,6 +10,7 @@
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -105,12 +106,15 @@ def merge_batch(
     scraped_by_condition: list[tuple[str, list[dict]]],
     today: str,
     now_str: str,
-) -> tuple[pd.DataFrame, dict, list[dict]]:
+    archive_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, list[dict]]:
     """
     複数条件分のスクレイプ結果をDBにマージする。
+    archive_df が渡された場合、identityがアーカイブに一致したら成約・取消から復活させる。
     Returns:
       - 更新後のdb_df
-      - diff: {new, price_changed, restored, found_ids}
+      - 更新後のarchive_df（復活で除去された行が抜けたもの）
+      - diff: {new, price_changed, restored, zumen_added, found_ids}
       - new_log_rows: 変更ログに追加する行
     """
     diff = {"new": [], "price_changed": [], "restored": [], "zumen_added": [], "found_ids": set()}
@@ -137,6 +141,15 @@ def merge_batch(
         ikey = _identity_key(rec)
         if ikey is not None:
             identity_to_idx[ikey] = i
+
+    # アーカイブ（成約・取消シート）のidentityインデックス
+    archive_records: list[dict] = [] if archive_df is None or archive_df.empty else archive_df.to_dict("records")
+    archive_identity_to_idx: dict[tuple, int] = {}
+    for i, rec in enumerate(archive_records):
+        ikey = _identity_key(rec)
+        if ikey is not None and ikey not in archive_identity_to_idx:
+            archive_identity_to_idx[ikey] = i
+    archive_remove_indices: set[int] = set()
 
     def _apply_existing_update(rec: dict, prop: dict, condition_name: str) -> None:
         """既存レコードに今回のスクレイプ結果を反映し、価格変更・復活・図面追加を検知する。"""
@@ -213,6 +226,40 @@ def merge_batch(
                 pid_renewed += 1
                 continue
 
+            # アーカイブ（成約・取消シート）に同一物件がないか確認
+            if ikey is not None and ikey in archive_identity_to_idx:
+                arch_idx = archive_identity_to_idx[ikey]
+                arch_rec = archive_records[arch_idx]
+                old_pid     = str(arch_rec.get(ID_COL, "")).strip()
+                old_company = arch_rec.get("会社名", "")
+                new_company = prop.get("会社名", "")
+
+                # アーカイブ行をアクティブに戻す
+                restored_rec = {col: arch_rec.get(col, "") for col in COLUMNS}
+                restored_rec[ID_COL] = pid
+                if new_company:
+                    restored_rec["会社名"] = new_company
+                restored_rec["状態"]        = STATUS_ACTIVE
+                restored_rec["取消候補日"] = ""
+
+                _apply_existing_update(restored_rec, prop, condition_name)
+
+                records.append(restored_rec)
+                new_idx = len(records) - 1
+                pid_to_idx[pid] = new_idx
+                identity_to_idx[ikey] = new_idx
+                archive_remove_indices.add(arch_idx)
+
+                diff["restored"].append(prop)
+                log_rows.append(_log_row(
+                    now_str, condition_name, "アーカイブから復活", prop, old_pid
+                ))
+                if new_company and old_company and new_company != old_company:
+                    log_rows.append(_log_row(
+                        now_str, condition_name, "会社名変更", prop, old_company
+                    ))
+                continue
+
             # 真の新規物件
             new_rec = {col: prop.get(col, "") for col in COLUMNS}
             new_rec["検出条件"]   = condition_name
@@ -228,13 +275,21 @@ def merge_batch(
             diff["new"].append(prop)
             log_rows.append(_log_row(now_str, condition_name, "新規登録", prop))
 
+    # アーカイブから復活した行を除去
+    if archive_remove_indices:
+        archive_records = [r for i, r in enumerate(archive_records) if i not in archive_remove_indices]
+    new_archive_df = (
+        pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
+        if archive_records else pd.DataFrame(columns=REMOVED_COLUMNS)
+    )
+
     new_df = pd.DataFrame(records, columns=COLUMNS)
     logger.info(
         f"マージ完了 → 新規:{len(diff['new'])} "
         f"価格変更:{len(diff['price_changed'])} 復活:{len(diff['restored'])} "
-        f"物件番号変更:{pid_renewed}"
+        f"物件番号変更:{pid_renewed} アーカイブ復活:{len(archive_remove_indices)}"
     )
-    return new_df, diff, log_rows
+    return new_df, new_archive_df, diff, log_rows
 
 
 # ----------------------------------------------------------------
@@ -462,9 +517,30 @@ def _norm_num(s) -> str:
         return s
 
 
+# カタカナ濁点・半濁点の除去テーブル（ザ→サ、グ→ク、パ→ハなど）
+_KATAKANA_DAKUTEN_TABLE = str.maketrans(
+    "ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ",
+    "カキクケコサシスセソタチツテトハヒフヘホハヒフヘホウ",
+)
+
+
 def _norm_text(s) -> str:
-    """文字列を正規化（空白除去）。識別キーで表記ゆれを吸収する用途。"""
-    return re.sub(r"\s+", "", str(s or "")).replace("　", "").strip()
+    """文字列を識別キー用に正規化。
+    - NFKC正規化で 全角英数→半角、互換文字を統一
+    - 空白・記号類を除去
+    - カタカナの濁点・半濁点を除去（表記ゆれ吸収：ザ↔サなど）
+    """
+    s = unicodedata.normalize("NFKC", str(s or ""))
+    s = re.sub(r"[\s\-‐‑‒–—―ーｰ・.,()\[\]{}!?#&/＋+]", "", s)
+    s = s.translate(_KATAKANA_DAKUTEN_TABLE)
+    return s
+
+
+def _norm_floor(s) -> str:
+    """所在階を数字（および地下のB）だけに整形。"6階" → "6", "B1階" → "B1"。"""
+    s = unicodedata.normalize("NFKC", str(s or "")).upper()
+    m = re.search(r"(B?\d+)", s)
+    return m.group(1) if m else ""
 
 
 def _norm_type(s) -> str:
@@ -488,7 +564,7 @@ def _identity_key(rec: dict) -> tuple | None:
         _norm_type(rec.get("物件種別")),
         addr,
         _norm_text(rec.get("建物名")),
-        _norm_text(rec.get("所在階")),
+        _norm_floor(rec.get("所在階")),
         _norm_text(rec.get("間取り")),
         _norm_num(rec.get("専有面積")),
         _norm_num(rec.get("建物面積")),

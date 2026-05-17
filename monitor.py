@@ -124,7 +124,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
     db_df      = load_db(db_path)
     archive_df = load_archive(db_path)
 
-    db_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str)
+    db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
 
     candidates: list[dict] = []
     if mode == "weekly":
@@ -249,7 +249,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     db_df      = load_db(db_path)
     archive_df = load_archive(db_path)
 
-    db_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str)
+    db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
 
     candidates: list[dict] = []
     if mode == "half_weekly":
@@ -400,7 +400,7 @@ async def run_auto(mode: str, cfg: dict) -> None:
     db_df      = load_db(db_path)
     archive_df = load_archive(db_path)
 
-    db_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str)
+    db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
 
     candidates: list[dict] = []
     if mode in ("auto_weekly",):
