@@ -55,7 +55,8 @@ def _remove_ippan_duplicates(props: list[dict]) -> list[dict]:
 
 # ----------------------------------------------------------------
 # ルール2: 同一現場グルーピング
-#   会社名 + 住所(丁目まで) + 徒歩分 が全一致 → グループID を付与
+#   会社名 + 住所(丁目まで・必須) + 沿線駅 + 徒歩分(必須) が全一致 → グループID を付与
+#   いずれかが欠落していたらグループ化対象外
 #   2件以上一致した場合のみ G001, G002... と振る
 # ----------------------------------------------------------------
 
@@ -66,9 +67,15 @@ def _mark_same_site_groups(props: list[dict]) -> list[dict]:
         company = p.get("会社名", "").strip()
         if not company:
             continue
-        addr = _chome(p.get("所在地", ""))
+        # 住所は厳密に「丁目まで」存在することを必須にする（丁目なしはグループ化対象外）
+        chome = _chome_strict(p.get("所在地", ""))
+        if not chome:
+            continue
         walk = _walk_min(p.get("交通", ""))
-        key  = (company, addr, walk)
+        if not walk:
+            continue
+        station = _station(p.get("沿線駅", "") or p.get("交通", ""))
+        key  = (company, chome, station, walk)
         bucket[key].append(i)
 
     gid = 1
@@ -103,10 +110,30 @@ def _chome(addr: str) -> str:
     return re.sub(r"[\d０-９][\d０-９\-‐‑‒–—―－号番地の・]*$", "", addr).strip()
 
 
+def _chome_strict(addr: str) -> str:
+    """丁目までを厳密に抽出。丁目を含まない住所には空文字を返す（グループ化対象外を示す）。"""
+    m = re.search(r"^(.+?[\d０-９]+丁目)", (addr or "").strip())
+    return m.group(1) if m else ""
+
+
 def _walk_min(kotsu: str) -> str:
     """交通フィールドから徒歩分を抽出する。例: '市川駅 徒歩5分' → '5'"""
     m = re.search(r"徒歩\s*(\d+)\s*分", kotsu)
     return m.group(1) if m else ""
+
+
+def _station(text: str) -> str:
+    """沿線駅または交通テキストから「駅」表現を抽出する。
+    例: '東西線 西葛西 徒歩7分' → '東西線西葛西'
+        '京葉線 海浜幕張'       → '京葉線海浜幕張'
+    """
+    s = (text or "").strip()
+    # 徒歩部分や末尾の数字を除去
+    s = re.sub(r"徒歩\s*\d+\s*分.*$", "", s).strip()
+    s = re.sub(r"\d+分.*$", "", s).strip()
+    # 空白を全部詰める（半角・全角）
+    s = re.sub(r"[\s　]+", "", s)
+    return s
 
 
 def _norm(s: str) -> str:

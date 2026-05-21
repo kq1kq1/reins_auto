@@ -520,41 +520,43 @@ def _regroup_globally(props: list[dict]) -> list[dict]:
 
 def _detect_ridge_change(candidates: list[dict], db_df) -> list[dict]:
     """
-    取消候補となった物件と同じ「会社名+丁目+徒歩分」グループの中で、
+    取消候補となった物件と同じ「会社名+丁目+沿線駅+徒歩分」グループの中で、
     まだアクティブな最安物件を「号棟チェンジ候補」として返す。
     """
     if db_df is None or db_df.empty or not candidates:
         return []
-    from rules import _chome, _walk_min
+    from rules import _chome_strict, _walk_min, _station
 
     active_mask = db_df["状態"].astype(str).str.strip() == "アクティブ"
     active_df = db_df[active_mask]
     if active_df.empty:
         return []
 
+    def keyfn(rec):
+        company = (rec.get("会社名") or "").strip()
+        chome = _chome_strict(rec.get("所在地", ""))
+        walk = _walk_min(rec.get("交通", ""))
+        station = _station(rec.get("沿線駅", "") or rec.get("交通", ""))
+        if not company or not chome or not walk:
+            return None
+        return (company, chome, station, walk)
+
     seen_keys: set[tuple] = set()
     result: list[dict] = []
     for c in candidates:
-        company = (c.get("会社名") or "").strip()
-        if not company:
-            continue
-        addr = _chome(c.get("所在地", ""))
-        walk = _walk_min(c.get("交通", ""))
-        key = (company, addr, walk)
-        if key in seen_keys:
+        key = keyfn(c)
+        if key is None or key in seen_keys:
             continue
         seen_keys.add(key)
 
-        same_group = active_df[
-            (active_df["会社名"].astype(str).str.strip() == company) &
-            (active_df["所在地"].astype(str).apply(_chome) == addr) &
-            (active_df["交通"].astype(str).apply(_walk_min) == walk)
-        ]
-        if same_group.empty:
+        same_group = []
+        for rec in active_df.to_dict("records"):
+            if keyfn(rec) == key:
+                same_group.append(rec)
+        if not same_group:
             continue
 
-        cheapest = min(same_group.to_dict("records"),
-                       key=lambda p: _price_num(p.get("価格", "")))
+        cheapest = min(same_group, key=lambda p: _price_num(p.get("価格", "")))
         result.append(cheapest)
     return result
 
