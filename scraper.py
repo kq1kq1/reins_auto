@@ -50,6 +50,7 @@ class REINSScraper:
         self._existing_no_zumen: set[str] = set()  # 既存だが図面なしだった物件のID
         self._seen_ippan_keys: set[tuple] = set()  # 一般媒介の重複検知用
         self._dl_seen_pids: set[str] = set()  # 今回のrunで既にDL済みの物件番号
+        self._seen_pids_run: set[str] = set()  # 今回のrun全体で既にパース済みの物件番号
 
     async def run(
         self,
@@ -128,6 +129,7 @@ class REINSScraper:
         self._from_date_override = from_date_override
         self._seen_ippan_keys.clear()
         self._dl_seen_pids.clear()
+        self._seen_pids_run.clear()
         results: list[tuple[str, list[dict]]] = []
 
         async with async_playwright() as pw:
@@ -227,6 +229,7 @@ class REINSScraper:
         self._existing_no_zumen = existing_no_zumen_ids or set()
         self._seen_ippan_keys.clear()
         self._dl_seen_pids.clear()
+        self._seen_pids_run.clear()
         results: list[tuple[str, list[dict]]] = []
 
         async with async_playwright() as pw:
@@ -539,10 +542,8 @@ class REINSScraper:
         self, page: Page, condition_name: str
     ) -> list[dict]:
         """タブ（売マンション・売一戸建・売土地など）ごとに全ページを取得する。
-        REINSは複数物件種別あるとき各タブに同じ行が出る場合があるため、
-        条件ごとに物件番号の重複を除外する。"""
+        物件番号の重複スキップは _seen_pids_run（実行全体スコープ）で行う。"""
         all_props: list[dict] = []
-        self._seen_pids_in_condition: set[str] = set()
 
         tabs = await page.query_selector_all('a[role="tab"]')
         if not tabs:
@@ -649,12 +650,11 @@ class REINSScraper:
                 if not prop_id:
                     continue
 
-                # 同じ条件内で既にパース済みならスキップ（タブ間重複対策）
-                seen = getattr(self, "_seen_pids_in_condition", None)
-                if seen is not None:
-                    if prop_id in seen:
-                        continue
-                    seen.add(prop_id)
+                # 今回の実行全体で既にパース済みならスキップ
+                # （同一条件内のタブ間重複も、検索条件をまたぐ重複も両方カバー）
+                if prop_id in self._seen_pids_run:
+                    continue
+                self._seen_pids_run.add(prop_id)
 
                 full_text = "\n".join(texts)
 
@@ -920,9 +920,13 @@ def _row_matches_tab(type_text: str, tab_type: str) -> bool:
 
 
 def _chome(addr: str) -> str:
-    """所在地から丁目までを抽出する（一般媒介重複判定用）。"""
-    m = re.search(r"^(.+?\d+丁目)", addr or "")
-    return m.group(1) if m else (addr or "").strip()
+    """所在地から「町名+丁目」レベルまでを抽出する（一般媒介重複判定用）。
+    丁目なしでも末尾の番地は除去する。"""
+    addr = (addr or "").strip()
+    m = re.search(r"^(.+?[\d０-９]+丁目)", addr)
+    if m:
+        return m.group(1)
+    return re.sub(r"[\d０-９][\d０-９\-‐‑‒–—―－号番地の・]*$", "", addr).strip()
 
 
 def _norm_key(s: str) -> str:
