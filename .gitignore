@@ -6,6 +6,7 @@ browser_profile/
 
 # DB・ログ・PDF出力
 reins_db.xlsx
+reins_db.backup_*.xlsx
 ~$*.xlsx
 *.log
 exports/
