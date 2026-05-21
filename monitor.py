@@ -525,7 +525,7 @@ def _detect_ridge_change(candidates: list[dict], db_df) -> list[dict]:
     """
     if db_df is None or db_df.empty or not candidates:
         return []
-    from rules import _chome_strict, _walk_min, _station
+    from rules import _chome, _walk_min, _station
 
     active_mask = db_df["状態"].astype(str).str.strip() == "アクティブ"
     active_df = db_df[active_mask]
@@ -534,7 +534,7 @@ def _detect_ridge_change(candidates: list[dict], db_df) -> list[dict]:
 
     def keyfn(rec):
         company = (rec.get("会社名") or "").strip()
-        chome = _chome_strict(rec.get("所在地", ""))
+        chome = _chome(rec.get("所在地", ""))
         walk = _walk_min(rec.get("交通", ""))
         station = _station(rec.get("沿線駅", "") or rec.get("交通", ""))
         if not company or not chome or not walk:

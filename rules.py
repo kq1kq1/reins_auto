@@ -67,8 +67,9 @@ def _mark_same_site_groups(props: list[dict]) -> list[dict]:
         company = p.get("会社名", "").strip()
         if not company:
             continue
-        # 住所は厳密に「丁目まで」存在することを必須にする（丁目なしはグループ化対象外）
-        chome = _chome_strict(p.get("所在地", ""))
+        # 丁目があれば丁目まで、なければ町名（末尾番地を除去）で判定。
+        # 丁目入り住所と丁目なし住所は別グループ扱い（部分一致もしない）。
+        chome = _chome(p.get("所在地", ""))
         if not chome:
             continue
         walk = _walk_min(p.get("交通", ""))
