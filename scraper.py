@@ -612,16 +612,13 @@ class REINSScraper:
         for ri, row in enumerate(rows):
             try:
                 # 1回のJS evaluateで全セルテキストを一括取得（高速化）
-                # 非表示セル（display:none / visibility:hidden）は空に置き換えてインデックスは保持
+                # 行のセルには可視性フィルタを掛けない（土地行で「商号」などが
+                # innerText空になってしまう挙動があるため）。
+                # タブ種別フィルタは別途、行の物件種目テキストで判定する。
                 texts = await row.evaluate(
                     """(el) => {
                         const cells = el.querySelectorAll('.p-table-body-item, td, [class*="body-item"]');
-                        return Array.from(cells).map(c => {
-                            if (c.offsetParent === null) return '';
-                            const cs = window.getComputedStyle(c);
-                            if (cs.visibility === 'hidden' || cs.display === 'none') return '';
-                            return (c.innerText || '').replace(/\\u3000/g, ' ');
-                        });
+                        return Array.from(cells).map(c => (c.innerText || c.textContent || '').replace(/\\u3000/g, ' '));
                     }"""
                 )
                 if not texts or len(texts) < 8:
@@ -696,7 +693,7 @@ class REINSScraper:
 
                 prop = {
                     "物件番号":   prop_id,
-                    "物件種別":   col("物件種目") or condition_name,
+                    "物件種別":   col("物件種目") or (tab_type or "") or condition_name,
                     "取引状況":   col("取引状況"),
                     "取引態様":   col("取引態様"),
                     "所在地":     col("所在地"),
