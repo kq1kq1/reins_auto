@@ -62,7 +62,7 @@ def send_email(cfg: dict, subject: str, body_html: str) -> bool:
 # メール本文生成
 # ----------------------------------------------------------------
 
-def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[str, str]:
+def build_summary_email(diff: dict, total: int, mode: str = "daily", printed_count: int = 0) -> tuple[str, str]:
     now = datetime.now()
     n_new       = len(diff.get("new", []))
     n_changed   = len(diff.get("price_changed", []))
@@ -74,7 +74,7 @@ def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[st
 
     mode_label = "週次" if mode in ("weekly", "auto_weekly") else "日次"
 
-    parts = [f"新規{n_new}件", f"価格変更{n_changed}件"]
+    parts = [f"印刷{printed_count}枚", f"新規{n_new}件", f"価格変更{n_changed}件"]
     if n_zumen_add:
         parts.append(f"図面追加{n_zumen_add}件")
     if n_ridge:
@@ -111,7 +111,7 @@ def build_summary_email(diff: dict, total: int, mode: str = "daily") -> tuple[st
         sections.append("<p style='color:#555'>本日の変化はありませんでした。</p>")
 
     subtitle = (
-        f"アクティブ物件: {total}件　|　"
+        f"アクティブ物件: {total}件　|　印刷: {printed_count}枚　|　"
         f"新規: {n_new}　価格変更: {n_changed}　"
         f"取消候補: {n_cand}　取消確定: {n_confirmed}　復活: {n_restored}"
     )

@@ -141,14 +141,18 @@ async def run_loop(cfg: dict, mode: str) -> None:
 
     save_db(db_path, db_df, archive_df, log_rows)
 
+    # グループ化された新規物件は最安1件だけを通知/印刷対象に絞る
+    new_filtered = _filter_cheapest_per_group(diff["new"])
+
     # 図面PDFの処理（新規物件のみ印刷）
+    printed_count = 0
     if dl_zumen:
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(diff["new"] + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
+        printed_count = _handle_pdfs(new_filtered + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     # メール通知
     diff_for_mail = {
-        "new":           diff["new"],
+        "new":           new_filtered,
         "price_changed": diff["price_changed"],
         "candidates":    candidates,        # 今回新たに取消候補入りしたもの
         "confirmed":     confirmed,         # 猶予切れで成約・取消確定したもの
@@ -159,7 +163,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
     if has_change or cfg["notification"].get("send_daily_summary"):
         total = (db_df["状態"] == "アクティブ").sum() if not db_df.empty else 0
-        subject, body = build_summary_email(diff_for_mail, total=int(total), mode=mode)
+        subject, body = build_summary_email(diff_for_mail, total=int(total), mode=mode, printed_count=printed_count)
         send_email(cfg["notification"], subject, body)
 
     # サマリ表示
@@ -279,9 +283,10 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     if mode == "half_weekly":
         ridge_change = _detect_ridge_change(candidates, db_df)
 
+    printed_count = 0
     if dl_zumen:
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(new_filtered + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
+        printed_count = _handle_pdfs(new_filtered + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     diff_for_mail = {
         "new":           new_filtered,
@@ -295,7 +300,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
     if has_change or cfg["notification"].get("send_daily_summary"):
         total = (db_df["状態"] == "アクティブ").sum() if not db_df.empty else 0
-        subject, body = build_summary_email(diff_for_mail, total=int(total), mode=mode)
+        subject, body = build_summary_email(diff_for_mail, total=int(total), mode=mode, printed_count=printed_count)
         send_email(cfg["notification"], subject, body)
 
     print()
@@ -449,16 +454,19 @@ async def run_auto(mode: str, cfg: dict) -> None:
 
     save_db(db_path, db_df, archive_df, log_rows)
 
+    new_filtered = _filter_cheapest_per_group(diff["new"])
+
+    printed_count = 0
     if mode in ("morning", "evening"):
         all_scraped = [p for _, props in cleaned for p in props]
-        _handle_pdfs(diff["new"] + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
+        printed_count = _handle_pdfs(new_filtered + diff.get("zumen_added", []), all_scraped, export_dir, print_cfg)
 
     if mode == "debug":
         _print_debug(diff, candidates, confirmed)
         return
 
     diff_for_mail = {
-        "new":           diff["new"],
+        "new":           new_filtered,
         "price_changed": diff["price_changed"],
         "candidates":    candidates,
         "confirmed":     confirmed,
@@ -468,7 +476,7 @@ async def run_auto(mode: str, cfg: dict) -> None:
     has_change = any(diff_for_mail[k] for k in diff_for_mail)
     if has_change or cfg["notification"].get("send_daily_summary"):
         total = (db_df["状態"] == "アクティブ").sum() if not db_df.empty else 0
-        subject, body = build_summary_email(diff_for_mail, total=int(total), mode=mode)
+        subject, body = build_summary_email(diff_for_mail, total=int(total), mode=mode, printed_count=printed_count)
         send_email(cfg["notification"], subject, body)
 
 
@@ -574,9 +582,10 @@ def _get_existing_id_sets(db_df) -> tuple[set[str], set[str]]:
     return existing_ids, no_zumen_ids
 
 
-def _handle_pdfs(new_props: list[dict], all_scraped: list[dict], export_dir: str, print_cfg: dict | None = None) -> None:
+def _handle_pdfs(new_props: list[dict], all_scraped: list[dict], export_dir: str, print_cfg: dict | None = None) -> int:
     """新規物件のPDFだけ残して結合・印刷。それ以外は削除する。
-    同じ物件番号のPDFが複数回DLされていた場合は1つだけ採用し、残りは削除する。"""
+    同じ物件番号のPDFが複数回DLされていた場合は1つだけ採用し、残りは削除する。
+    返り値: 実際に印刷したPDF枚数（結合元の件数）。"""
     new_ids  = {p.get("物件番号") for p in new_props}
     pid_to_pdf: dict[str, Path] = {}
 
@@ -602,11 +611,12 @@ def _handle_pdfs(new_props: list[dict], all_scraped: list[dict], export_dir: str
                 pass
 
     if not pid_to_pdf:
-        return
+        return 0
 
     merged = merge_pdfs(list(pid_to_pdf.values()), Path(export_dir))
     if merged:
         print_pdf(merged, print_cfg)
+    return len(pid_to_pdf)
 
 
 def _print_debug(diff: dict, candidates: list[dict], confirmed: list[dict]) -> None:

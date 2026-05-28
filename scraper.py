@@ -28,6 +28,31 @@ from playwright.async_api import async_playwright, Page, Download
 logger = logging.getLogger(__name__)
 
 
+# 物件種別ごとの固定列レイアウト（DOMセルのインデックス）。
+# REINSは戸建+土地などタブが複数あるとヘッダーDOMが共通でCSS切替のため
+# ヘッダー検出が不安定。実機調査で判明した列番号を優先的に使う。
+COLUMN_LAYOUTS = {
+    "マンション": {
+        "物件番号": 3, "物件種目": 4, "専有面積": 5, "所在地": 6, "取引態様": 7,
+        "価格": 8, "用途地域": 9, "㎡単価": 10, "建物名": 11, "所在階": 12,
+        "間取": 13, "取引状況": 14, "管理費": 15, "坪単価": 17, "沿線駅": 18,
+        "交通": 19, "商号": 21, "築年月": 23, "電話番号": 25,
+    },
+    "戸建": {
+        "物件番号": 3, "物件種目": 4, "土地面積": 5, "所在地": 6, "取引態様": 7,
+        "価格": 8, "用途地域": 9, "建物面積": 10, "間取": 12, "取引状況": 13,
+        "接道状況": 14, "沿線駅": 15, "交通": 16, "接道１": 18, "商号": 19,
+        "築年月": 21, "電話番号": 23,
+    },
+    "土地": {
+        "物件番号": 3, "物件種目": 4, "土地面積": 5, "所在地": 6, "取引態様": 7,
+        "価格": 8, "用途地域": 9, "㎡単価": 10, "取引状況": 12, "建ぺい率": 13,
+        "坪単価": 14, "沿線駅": 15, "交通": 16, "容積率": 18, "接道状況": 19,
+        "商号": 20, "接道１": 22, "電話番号": 23,
+    },
+}
+
+
 async def _human_wait(min_ms: int = 600, max_ms: int = 1400) -> None:
     """人が操作するような間隔でランダムに待機する"""
     ms = random.randint(min_ms, max_ms)
@@ -626,12 +651,23 @@ class REINSScraper:
                         logger.warning(f"  セル数が想定より少ない: {len(texts) if texts else 0}")
                     continue
 
+                layout = COLUMN_LAYOUTS.get(tab_type, {})
+
                 def col(name: str, *aliases: str) -> str:
-                    """列名（または別名）でテキスト取得。"""
+                    """列名（または別名）でテキスト取得。
+                    固定レイアウト（タブ種別ごと）を優先し、なければヘッダーマップを使う。"""
+                    for n in (name, *aliases):
+                        idx = layout.get(n)
+                        if idx is not None and idx < len(texts):
+                            v = texts[idx].replace("\n", " ").strip()
+                            if v:
+                                return v
                     for n in (name, *aliases):
                         idx = header_map.get(n)
                         if idx is not None and idx < len(texts):
-                            return texts[idx].replace("\n", " ").strip()
+                            v = texts[idx].replace("\n", " ").strip()
+                            if v:
+                                return v
                     return ""
 
                 # タブ種別と物件種目が一致しなければスキップ（列レイアウト違いによる誤読防止）
@@ -696,7 +732,7 @@ class REINSScraper:
                     "物件種別":   col("物件種目") or (tab_type or "") or condition_name,
                     "取引状況":   col("取引状況"),
                     "取引態様":   col("取引態様"),
-                    "所在地":     col("所在地"),
+                    "所在地":     col("所在地") or _find_addr(texts),
                     "建物名":     col("建物名"),
                     "所在階":     col("所在階"),
                     "間取り":     col("間取", "間取り") or _extract_madori(full_text),
@@ -712,10 +748,10 @@ class REINSScraper:
                     "容積率":     col("容積率"),
                     "接道状況":   col("接道状況"),
                     "接道１":     col("接道１", "接道1"),
-                    "沿線駅":     col("沿線駅"),
-                    "交通":       col("交通"),
-                    "築年月":     col("築年月"),
-                    "会社名":     _extract_company(col("商号")),
+                    "沿線駅":     col("沿線駅") or _find_station(texts),
+                    "交通":       col("交通") or _find_transport(texts),
+                    "築年月":     col("築年月") or _extract_date_wareki(full_text),
+                    "会社名":     _extract_company(col("商号")) or _find_company(texts),
                     "電話番号":   col("電話番号"),
                     "登録日":     _extract_date(full_text),
                     "図面":       "あり" if has_zumen else "なし",
@@ -888,6 +924,59 @@ def _extract_company(cell_text: str) -> str:
         if digit_ratio < 0.5:
             return line
     return cell_text.split("\n")[0].strip()
+
+
+def _find_addr(texts: list[str]) -> str:
+    """セル群から都道府県で始まる所在地を探す。"""
+    for t in texts:
+        ts = (t or "").strip()
+        if re.match(r"^(東京都|千葉県|埼玉県|神奈川県|茨城県|栃木県|群馬県)", ts):
+            return ts.replace("\n", " ")
+    return ""
+
+
+def _find_station(texts: list[str]) -> str:
+    """セル群から沿線駅（「○○線 △△」形式で徒歩を含まないもの）を探す。"""
+    for t in texts:
+        ts = (t or "").strip().replace("\n", " ")
+        if "線" in ts and "徒歩" not in ts and "バス" not in ts and "分" not in ts:
+            # 路線名っぽい（「線」を含み、住所でない）
+            if not re.match(r"^(東京都|千葉県|埼玉県|神奈川県)", ts) and len(ts) <= 20:
+                return ts
+    return ""
+
+
+def _find_transport(texts: list[str]) -> str:
+    """セル群から交通（徒歩X分 / バスX分 / 停歩 等）を探す。"""
+    for t in texts:
+        ts = (t or "").strip().replace("\n", " ")
+        if re.search(r"(徒歩|バス|停歩)\s*\d+\s*分", ts):
+            return ts
+    return ""
+
+
+def _find_company(texts: list[str]) -> str:
+    """セル群から会社名（商号）を探す。法人表記や不動産系キーワードを含むもの。"""
+    for t in texts:
+        ts = (t or "").strip().replace("\n", " ")
+        if not ts:
+            continue
+        if re.match(r"^(東京都|千葉県|埼玉県|神奈川県)", ts):
+            continue
+        if re.search(r"(（株）|（有）|㈱|㈲|株式会社|有限会社|不動産|ホーム|住宅|"
+                     r"エステート|リアルティ|ハウス|センター|販売|商事|興業|地所|"
+                     r"リバブル|ステップ|ピタットハウス|住販)", ts):
+            return ts
+    return ""
+
+
+def _extract_date_wareki(text: str) -> str:
+    """テキストから築年月（YYYY年（元号）M月 形式）を抽出する。"""
+    m = re.search(r"(\d{4}年(?:（[^）]*）)?\s*\d{1,2}月)", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"(令和\d+年\d+月|平成\d+年\d+月|昭和\d+年\d+月)", text)
+    return m.group(1) if m else ""
 
 
 def _tab_type_from_text(tab_text: str) -> str:
