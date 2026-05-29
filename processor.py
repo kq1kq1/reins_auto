@@ -151,8 +151,11 @@ def merge_batch(
             archive_identity_to_idx[ikey] = i
     archive_remove_indices: set[int] = set()
 
-    def _apply_existing_update(rec: dict, prop: dict, condition_name: str) -> None:
-        """既存レコードに今回のスクレイプ結果を反映し、価格変更・復活・図面追加を検知する。"""
+    def _apply_existing_update(rec: dict, prop: dict, condition_name: str,
+                               report_price_change: bool = True) -> None:
+        """既存レコードに今回のスクレイプ結果を反映し、価格変更・復活・図面追加を検知する。
+        report_price_change=False の場合、価格は更新するが「価格変更」としては報告しない
+        （アーカイブからの復活時は古い価格との差をノイズとして扱わない）。"""
         old_status = rec.get("状態", "")
         old_price  = rec.get(PRICE_COL, "")
         new_price  = prop.get(PRICE_COL, "")
@@ -168,11 +171,12 @@ def merge_batch(
 
         if old_price and new_price and _norm_price(old_price) != _norm_price(new_price):
             rec[PRICE_COL] = new_price
-            p = dict(prop)
-            p["旧価格"] = old_price
-            p["新価格"] = new_price
-            diff["price_changed"].append(p)
-            log_rows.append(_log_row(now_str, condition_name, "価格変更", prop, old_price))
+            if report_price_change:
+                p = dict(prop)
+                p["旧価格"] = old_price
+                p["新価格"] = new_price
+                diff["price_changed"].append(p)
+                log_rows.append(_log_row(now_str, condition_name, "価格変更", prop, old_price))
 
         if old_status == STATUS_CANDIDATE:
             diff["restored"].append(prop)
@@ -242,7 +246,8 @@ def merge_batch(
                 restored_rec["状態"]        = STATUS_ACTIVE
                 restored_rec["取消候補日"] = ""
 
-                _apply_existing_update(restored_rec, prop, condition_name)
+                # アーカイブ復活時は価格変更として報告しない（古い価格との差はノイズ）
+                _apply_existing_update(restored_rec, prop, condition_name, report_price_change=False)
 
                 records.append(restored_rec)
                 new_idx = len(records) - 1
