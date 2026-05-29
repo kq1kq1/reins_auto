@@ -129,16 +129,21 @@ async def run_loop(cfg: dict, mode: str) -> None:
     candidates: list[dict] = []
     confirmed: list[dict] = []
     if mode == "weekly":
-        db_df, candidates, weekly_logs = mark_removal_candidates(
-            db_df, diff["found_ids"], today, now_str
-        )
-        log_rows.extend(weekly_logs)
-
-        # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
-        db_df, archive_df, confirmed, grace_logs = process_grace_period(
-            db_df, archive_df, today, now_str, grace_days=grace_days
-        )
-        log_rows.extend(grace_logs)
+        min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
+        ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
+        if ok:
+            db_df, candidates, weekly_logs = mark_removal_candidates(
+                db_df, diff["found_ids"], today, now_str
+            )
+            log_rows.extend(weekly_logs)
+            # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
+            db_df, archive_df, confirmed, grace_logs = process_grace_period(
+                db_df, archive_df, today, now_str, grace_days=grace_days
+            )
+            log_rows.extend(grace_logs)
+        else:
+            logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")
+            print(f"⚠️ 今回の取得が少なすぎます（{fc}/{ac}={cov:.0%}）。取消検知をスキップしました。")
 
     save_db(db_path, db_df, archive_df, log_rows)
 
@@ -259,16 +264,21 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     candidates: list[dict] = []
     confirmed: list[dict] = []
     if mode == "half_weekly":
-        db_df, candidates, weekly_logs = mark_removal_candidates(
-            db_df, diff["found_ids"], today, now_str
-        )
-        log_rows.extend(weekly_logs)
-
-        # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
-        db_df, archive_df, confirmed, grace_logs = process_grace_period(
-            db_df, archive_df, today, now_str, grace_days=grace_days
-        )
-        log_rows.extend(grace_logs)
+        min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
+        ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
+        if ok:
+            db_df, candidates, weekly_logs = mark_removal_candidates(
+                db_df, diff["found_ids"], today, now_str
+            )
+            log_rows.extend(weekly_logs)
+            # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
+            db_df, archive_df, confirmed, grace_logs = process_grace_period(
+                db_df, archive_df, today, now_str, grace_days=grace_days
+            )
+            log_rows.extend(grace_logs)
+        else:
+            logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")
+            print(f"⚠️ 今回の取得が少なすぎます（{fc}/{ac}={cov:.0%}）。取消検知をスキップしました。")
 
     save_db(db_path, db_df, archive_df, log_rows)
 
@@ -442,16 +452,20 @@ async def run_auto(mode: str, cfg: dict) -> None:
     candidates: list[dict] = []
     confirmed: list[dict] = []
     if mode in ("auto_weekly",):
-        db_df, candidates, weekly_logs = mark_removal_candidates(
-            db_df, diff["found_ids"], today, now_str
-        )
-        log_rows.extend(weekly_logs)
-
-        # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
-        db_df, archive_df, confirmed, grace_logs = process_grace_period(
-            db_df, archive_df, today, now_str, grace_days=grace_days
-        )
-        log_rows.extend(grace_logs)
+        min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
+        ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
+        if ok:
+            db_df, candidates, weekly_logs = mark_removal_candidates(
+                db_df, diff["found_ids"], today, now_str
+            )
+            log_rows.extend(weekly_logs)
+            # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
+            db_df, archive_df, confirmed, grace_logs = process_grace_period(
+                db_df, archive_df, today, now_str, grace_days=grace_days
+            )
+            log_rows.extend(grace_logs)
+        else:
+            logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")
 
     if mode == "bootstrap":
         save_db(db_path, db_df, archive_df, log_rows)
@@ -489,6 +503,19 @@ async def run_auto(mode: str, cfg: dict) -> None:
 # ================================================================
 # 共通ユーティリティ
 # ================================================================
+
+def _check_removal_coverage(db_df, found_ids: set, min_coverage: float) -> tuple[bool, float, int, int]:
+    """
+    週次の取消検知を実行してよいか判定する。
+    アクティブDB件数に対して今回見つかった件数が少なすぎる場合（検索の取りこぼし）は
+    取消検知をスキップして誤確定を防ぐ。
+    Returns: (実行可否, カバレッジ率, 見つかった件数, アクティブ件数)
+    """
+    active_count = int((db_df["状態"] == "アクティブ").sum()) if not db_df.empty else 0
+    found_count  = len(found_ids)
+    coverage = (found_count / active_count) if active_count else 1.0
+    return (coverage >= min_coverage, coverage, found_count, active_count)
+
 
 def _price_num(s) -> float:
     """価格文字列から数値を取り出す（取れなければ無限大）。"""

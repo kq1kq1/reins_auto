@@ -587,6 +587,10 @@ class REINSScraper:
 
             tab_props = await self._parse_all_pages(page, condition_name, tab_type=tab_type)
             logger.info(f"    タブ「{tab_text}」: {len(tab_props)}件")
+            # 500件以上は検索上限で取りこぼしの可能性
+            m = re.search(r"\(\s*(\d[\d,]*)\s*件\s*\)", tab_text)
+            if m and int(m.group(1).replace(",", "")) >= 500:
+                logger.warning(f"    ⚠️ タブ「{tab_text}」が500件以上→REINS検索上限で取りこぼしの可能性あり")
             all_props.extend(tab_props)
 
         return all_props
