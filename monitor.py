@@ -87,7 +87,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
     db_path     = cfg["storage"]["db_path"]
     export_dir  = cfg["storage"]["export_dir"]
     keep_days   = cfg["storage"].get("pdf_keep_days", 7)
-    grace_days  = cfg["storage"].get("removal_grace_days", 3)
+    confirm_misses = cfg["storage"].get("removal_confirm_misses", 2)
     print_cfg   = cfg.get("print", {})
 
     cleanup_old_exports(export_dir, days=keep_days)
@@ -138,7 +138,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
             log_rows.extend(weekly_logs)
             # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
             db_df, archive_df, confirmed, grace_logs = process_grace_period(
-                db_df, archive_df, today, now_str, grace_days=grace_days
+                db_df, archive_df, today, now_str, confirm_misses=confirm_misses
             )
             log_rows.extend(grace_logs)
         else:
@@ -181,7 +181,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
     print(f"  取消候補から復活: {len(diff['restored'])}件")
     if mode == "weekly":
         print(f"  新規取消候補:   {len(candidates)}件")
-    print(f"  成約・取消確定: {len(confirmed)}件（猶予{grace_days}日経過）")
+    print(f"  成約・取消確定: {len(confirmed)}件（{confirm_misses}回連続未検出）")
     print("=" * 60)
 
 
@@ -205,7 +205,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     db_path     = cfg["storage"]["db_path"]
     export_dir  = cfg["storage"]["export_dir"]
     keep_days   = cfg["storage"].get("pdf_keep_days", 7)
-    grace_days  = cfg["storage"].get("removal_grace_days", 3)
+    confirm_misses = cfg["storage"].get("removal_confirm_misses", 2)
     state_path  = cfg["storage"].get("state_path", "state.json")
     print_cfg   = cfg.get("print", {})
 
@@ -273,7 +273,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
             log_rows.extend(weekly_logs)
             # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
             db_df, archive_df, confirmed, grace_logs = process_grace_period(
-                db_df, archive_df, today, now_str, grace_days=grace_days
+                db_df, archive_df, today, now_str, confirm_misses=confirm_misses
             )
             log_rows.extend(grace_logs)
         else:
@@ -324,7 +324,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     print(f"  取消候補から復活: {len(diff['restored'])}件")
     if mode == "half_weekly":
         print(f"  新規取消候補:   {len(candidates)}件")
-    print(f"  成約・取消確定: {len(confirmed)}件（猶予{grace_days}日経過）")
+    print(f"  成約・取消確定: {len(confirmed)}件（{confirm_misses}回連続未検出）")
     print("=" * 60)
 
 
@@ -413,7 +413,7 @@ async def run_auto(mode: str, cfg: dict) -> None:
     db_path     = cfg["storage"]["db_path"]
     export_dir  = cfg["storage"]["export_dir"]
     keep_days   = cfg["storage"].get("pdf_keep_days", 7)
-    grace_days  = cfg["storage"].get("removal_grace_days", 3)
+    confirm_misses = cfg["storage"].get("removal_confirm_misses", 2)
     print_cfg   = cfg.get("print", {})
 
     cleanup_old_exports(export_dir, days=keep_days)
@@ -461,7 +461,7 @@ async def run_auto(mode: str, cfg: dict) -> None:
             log_rows.extend(weekly_logs)
             # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
             db_df, archive_df, confirmed, grace_logs = process_grace_period(
-                db_df, archive_df, today, now_str, grace_days=grace_days
+                db_df, archive_df, today, now_str, confirm_misses=confirm_misses
             )
             log_rows.extend(grace_logs)
         else:

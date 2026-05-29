@@ -37,7 +37,7 @@ COLUMNS = [
     "用途地域", "建ぺい率", "容積率", "接道状況", "接道１",
     "沿線駅", "交通", "築年月",
     "会社名", "電話番号",
-    "登録日", "図面", "検出条件", "状態", "取消候補日",
+    "登録日", "図面", "検出条件", "状態", "取消候補日", "未検出回数",
     "グループID", "初回取得日", "最終確認日",
 ]
 REMOVED_COLUMNS = COLUMNS + ["成約・取消日"]
@@ -165,6 +165,7 @@ def merge_batch(
         rec["最終確認日"] = today
         rec["状態"]        = STATUS_ACTIVE
         rec["取消候補日"] = ""
+        rec["未検出回数"] = ""  # 見つかったので連続未検出カウントをリセット
         rec["検出条件"]   = _merge_conditions(rec.get("検出条件", ""), condition_name)
         if new_zumen:
             rec["図面"] = new_zumen
@@ -422,10 +423,13 @@ def mark_removal_candidates(
     db_df: pd.DataFrame, found_ids: set[str], today: str, now_str: str,
 ) -> tuple[pd.DataFrame, list[dict], list[dict]]:
     """
-    今回の週次実行で見つからなかった「アクティブ」物件を「取消候補」にする。
+    今回の週次実行で見つからなかった物件を処理する。
+    - アクティブで見つからなかった → 取消候補にして 未検出回数=1
+    - 既に取消候補で今回も見つからなかった → 未検出回数 +1
+    （見つかったものは merge_batch 側で 未検出回数 リセット済み）
     Returns:
       - 更新後のdb_df
-      - candidates: 新たに取消候補になった物件dictのリスト
+      - candidates: 今回新たに取消候補になった物件dictのリスト
       - log_rows: 変更ログ行
     """
     candidates: list[dict] = []
@@ -434,19 +438,32 @@ def mark_removal_candidates(
         return db_df, candidates, log_rows
 
     records = db_df.to_dict("records")
+    incremented = 0
     for rec in records:
         pid    = str(rec.get(ID_COL, "")).strip()
         status = rec.get("状態", "")
-        if not pid or status != STATUS_ACTIVE:
+        if not pid or pid in found_ids:
             continue
-        if pid not in found_ids:
+        if status == STATUS_ACTIVE:
+            # 新たに見つからなくなった → 取消候補1回目
             rec["状態"]        = STATUS_CANDIDATE
             rec["取消候補日"] = today
+            rec["未検出回数"] = "1"
             candidates.append(dict(rec))
-            log_rows.append(_log_row(now_str, rec.get("検出条件", ""), "取消候補", rec))
+            log_rows.append(_log_row(now_str, rec.get("検出条件", ""), "取消候補(1回目)", rec))
+        elif status == STATUS_CANDIDATE:
+            # 既に取消候補で今回も見つからない → カウントアップ
+            try:
+                cnt = int(str(rec.get("未検出回数", "0") or "0"))
+            except ValueError:
+                cnt = 0
+            cnt += 1
+            rec["未検出回数"] = str(cnt)
+            incremented += 1
+            log_rows.append(_log_row(now_str, rec.get("検出条件", ""), f"取消候補({cnt}回目)", rec))
 
     new_df = pd.DataFrame(records, columns=COLUMNS)
-    logger.info(f"取消候補マーキング: {len(candidates)}件")
+    logger.info(f"取消候補マーキング: 新規{len(candidates)}件 / 継続未検出{incremented}件")
     return new_df, candidates, log_rows
 
 
@@ -459,10 +476,11 @@ def process_grace_period(
     archive_df: pd.DataFrame,
     today: str,
     now_str: str,
-    grace_days: int = 3,
+    confirm_misses: int = 2,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict], list[dict]]:
     """
-    取消候補日から grace_days 経過した物件を成約・取消シートへ移動する。
+    取消候補のうち、週次実行で confirm_misses 回連続見つからなかった物件を
+    成約・取消シートへ移動する（=成約確定）。
     Returns:
       - 更新後のdb_df（移動した物件は除去）
       - 更新後のarchive_df（移動した物件を追加）
@@ -474,7 +492,6 @@ def process_grace_period(
     if db_df.empty:
         return db_df, archive_df, confirmed, log_rows
 
-    today_dt = datetime.strptime(today, "%Y-%m-%d")
     keep_records: list[dict] = []
     archive_records = archive_df.to_dict("records") if not archive_df.empty else []
 
@@ -482,16 +499,11 @@ def process_grace_period(
         if rec.get("状態", "") != STATUS_CANDIDATE:
             keep_records.append(rec)
             continue
-        cdate = str(rec.get("取消候補日", "")).strip()
-        if not cdate:
-            keep_records.append(rec)
-            continue
         try:
-            cdate_dt = datetime.strptime(cdate, "%Y-%m-%d")
+            misses = int(str(rec.get("未検出回数", "0") or "0"))
         except ValueError:
-            keep_records.append(rec)
-            continue
-        if today_dt - cdate_dt >= timedelta(days=grace_days):
+            misses = 0
+        if misses >= confirm_misses:
             arch = {col: rec.get(col, "") for col in COLUMNS}
             arch["成約・取消日"] = today
             archive_records.append(arch)
