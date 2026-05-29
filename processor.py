@@ -352,12 +352,9 @@ def cleanup_db(db_path: str) -> dict:
                 records[keeper].get("検出条件", ""),
                 r.get("検出条件", "")
             )
-            # 残りはアーカイブへ（成約・取消ではなく「重複統合」として残す）
-            arch = {col: r.get(col, "") for col in COLUMNS}
-            arch["成約・取消日"] = today + " (重複統合)"
-            archive_records.append(arch)
+            # 重複統合分はアーカイブに残さず削除する（変更ログにだけ記録）
             log_rows.append(_log_row(
-                now_str, r.get("検出条件", ""), "重複統合", r, str(records[keeper].get(ID_COL, ""))
+                now_str, r.get("検出条件", ""), "重複統合(削除)", r, str(records[keeper].get(ID_COL, ""))
             ))
             to_archive_indices.add(dup)
             merged_count += 1
