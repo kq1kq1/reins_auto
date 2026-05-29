@@ -370,6 +370,29 @@ def cleanup_db(db_path: str) -> dict:
     regrouped_count = sum(1 for r in active_only if r.get("グループID"))
     active_after = len(active_only)
 
+    # ── アーカイブのゴミ掃除 ──
+    # 成約・取消シートにあるが、同じ物件番号 or 同一identity がアクティブDBに存在する行は
+    # 「実は成約してない（再登録で復活済み）」ので削除する。
+    active_pids = {str(r.get(ID_COL, "")).strip() for r in records if str(r.get(ID_COL, "")).strip()}
+    active_idents = set()
+    for r in records:
+        k = _identity_key(r)
+        if k is not None:
+            active_idents.add(k)
+
+    kept_archive = []
+    archive_orphans_removed = 0
+    for r in archive_records:
+        pid = str(r.get(ID_COL, "")).strip()
+        ikey = _identity_key(r)
+        if (pid and pid in active_pids) or (ikey is not None and ikey in active_idents):
+            # アクティブに同一物件が存在 → 成約済みは誤りなので削除
+            archive_orphans_removed += 1
+            log_rows.append(_log_row(now_str, r.get("検出条件", ""), "誤成約取消を削除", r))
+            continue
+        kept_archive.append(r)
+    archive_records = kept_archive
+
     new_db_df      = pd.DataFrame(records, columns=COLUMNS)
     new_archive_df = (
         pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
@@ -382,6 +405,7 @@ def cleanup_db(db_path: str) -> dict:
         "active_after":    active_after,
         "merged":          merged_count,
         "regrouped_count": regrouped_count,
+        "archive_orphans_removed": archive_orphans_removed,
     }
 
 

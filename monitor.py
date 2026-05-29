@@ -127,17 +127,18 @@ async def run_loop(cfg: dict, mode: str) -> None:
     db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
 
     candidates: list[dict] = []
+    confirmed: list[dict] = []
     if mode == "weekly":
         db_df, candidates, weekly_logs = mark_removal_candidates(
             db_df, diff["found_ids"], today, now_str
         )
         log_rows.extend(weekly_logs)
 
-    # 猶予期間切れの取消候補を成約・取消へ
-    db_df, archive_df, confirmed, grace_logs = process_grace_period(
-        db_df, archive_df, today, now_str, grace_days=grace_days
-    )
-    log_rows.extend(grace_logs)
+        # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
+        db_df, archive_df, confirmed, grace_logs = process_grace_period(
+            db_df, archive_df, today, now_str, grace_days=grace_days
+        )
+        log_rows.extend(grace_logs)
 
     save_db(db_path, db_df, archive_df, log_rows)
 
@@ -256,16 +257,18 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
 
     candidates: list[dict] = []
+    confirmed: list[dict] = []
     if mode == "half_weekly":
         db_df, candidates, weekly_logs = mark_removal_candidates(
             db_df, diff["found_ids"], today, now_str
         )
         log_rows.extend(weekly_logs)
 
-    db_df, archive_df, confirmed, grace_logs = process_grace_period(
-        db_df, archive_df, today, now_str, grace_days=grace_days
-    )
-    log_rows.extend(grace_logs)
+        # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
+        db_df, archive_df, confirmed, grace_logs = process_grace_period(
+            db_df, archive_df, today, now_str, grace_days=grace_days
+        )
+        log_rows.extend(grace_logs)
 
     save_db(db_path, db_df, archive_df, log_rows)
 
@@ -366,6 +369,7 @@ def run_cleanup(cfg: dict) -> None:
     print(f"  アクティブ件数: {stats['active_before']} → {stats['active_after']}")
     print(f"  重複統合(アーカイブ送り): {stats['merged']}件")
     print(f"  グループID付与: {stats['regrouped_count']}件")
+    print(f"  誤成約取消を削除: {stats.get('archive_orphans_removed', 0)}件")
     print(f"  バックアップ: {backup}")
     print("=" * 60)
 
@@ -436,16 +440,18 @@ async def run_auto(mode: str, cfg: dict) -> None:
     db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
 
     candidates: list[dict] = []
+    confirmed: list[dict] = []
     if mode in ("auto_weekly",):
         db_df, candidates, weekly_logs = mark_removal_candidates(
             db_df, diff["found_ids"], today, now_str
         )
         log_rows.extend(weekly_logs)
 
-    db_df, archive_df, confirmed, grace_logs = process_grace_period(
-        db_df, archive_df, today, now_str, grace_days=grace_days
-    )
-    log_rows.extend(grace_logs)
+        # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
+        db_df, archive_df, confirmed, grace_logs = process_grace_period(
+            db_df, archive_df, today, now_str, grace_days=grace_days
+        )
+        log_rows.extend(grace_logs)
 
     if mode == "bootstrap":
         save_db(db_path, db_df, archive_df, log_rows)
