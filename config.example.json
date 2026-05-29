@@ -18,14 +18,15 @@
     "db_path":      "reins_db.xlsx",
     "export_dir":   "exports",
     "log_path":     "reins_auto.log",
-    "profile_dir":  "C:/Users/<USER>/AppData/Local/reins_auto/browser_profile",
+    "profile_dir":  "C:/Users/<ユーザー名をこのマシンに合わせて変更>/AppData/Local/reins_auto/browser_profile",
     "pdf_keep_days": 7,
-    "removal_grace_days": 3
+    "removal_confirm_misses": 2,
+    "removal_min_coverage": 0.7
   },
 
   "notification": {
     "email_from":         "your@gmail.com",
-    "email_to":           "your@gmail.com",
+    "email_to":           ["your@gmail.com"],
     "smtp_server":        "smtp.gmail.com",
     "smtp_port":          587,
     "smtp_password":      "アプリパスワードをここに",
