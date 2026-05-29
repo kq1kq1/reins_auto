@@ -187,6 +187,15 @@ def merge_batch(
             diff["zumen_added"].append(prop)
             log_rows.append(_log_row(now_str, condition_name, "図面追加", prop))
 
+    # 今回のスクレイプに登場する全物件番号を事前計算
+    # （再登録判定で「古い物件番号がまだ生きてるか」を見るため）
+    all_found_pids: set[str] = set()
+    for _, props in scraped_by_condition:
+        for p in props:
+            pp = str(p.get(ID_COL, "")).strip()
+            if pp:
+                all_found_pids.add(pp)
+
     pid_renewed = 0
     for condition_name, props in scraped_by_condition:
         for prop in props:
@@ -201,38 +210,47 @@ def merge_batch(
                 continue
 
             # 物件番号は新規だが、同一物件キーで既存にヒットしないか確認（再登録検知）
+            # ただし、ヒットした既存レコードの物件番号が今回のスクレイプにまだ存在する場合は
+            # 「両方とも生きている別物件」なので再登録ではない → 真の新規として扱う
             ikey = _identity_key(prop)
+            treat_as_distinct_new = False
             if ikey is not None and ikey in identity_to_idx:
                 idx = identity_to_idx[ikey]
                 rec = records[idx]
-                old_pid     = rec.get(ID_COL, "")
-                old_company = rec.get("会社名", "")
-                new_company = prop.get("会社名", "")
+                old_pid     = str(rec.get(ID_COL, "")).strip()
 
-                # 物件番号と会社名を最新に更新（位置は固定）
-                rec[ID_COL] = pid
-                if new_company:
-                    rec["会社名"] = new_company
-                _apply_existing_update(rec, prop, condition_name)
+                if old_pid and old_pid in all_found_pids:
+                    # 旧物件番号もまだREINSにある → 別物件。再登録もアーカイブ復活も行わず新規扱い
+                    treat_as_distinct_new = True
+                else:
+                    old_company = rec.get("会社名", "")
+                    new_company = prop.get("会社名", "")
 
-                # インデックスのpid参照を更新（位置は維持）
-                if old_pid in pid_to_idx:
-                    del pid_to_idx[old_pid]
-                pid_to_idx[pid] = idx
+                    # 物件番号と会社名を最新に更新（位置は固定）
+                    rec[ID_COL] = pid
+                    if new_company:
+                        rec["会社名"] = new_company
+                    _apply_existing_update(rec, prop, condition_name)
 
-                # 変更ログには「物件番号変更」を残す（旧価格カラムに旧pidを格納）
-                log_rows.append(_log_row(
-                    now_str, condition_name, "物件番号変更", prop, old_pid
-                ))
-                if new_company and old_company and new_company != old_company:
+                    # インデックスのpid参照を更新（位置は維持）
+                    if old_pid in pid_to_idx:
+                        del pid_to_idx[old_pid]
+                    pid_to_idx[pid] = idx
+
+                    # 変更ログには「物件番号変更」を残す（旧価格カラムに旧pidを格納）
                     log_rows.append(_log_row(
-                        now_str, condition_name, "会社名変更", prop, old_company
+                        now_str, condition_name, "物件番号変更", prop, old_pid
                     ))
-                pid_renewed += 1
-                continue
+                    if new_company and old_company and new_company != old_company:
+                        log_rows.append(_log_row(
+                            now_str, condition_name, "会社名変更", prop, old_company
+                        ))
+                    pid_renewed += 1
+                    continue
 
             # アーカイブ（成約・取消シート）に同一物件がないか確認
-            if ikey is not None and ikey in archive_identity_to_idx:
+            # （別物件と判定済みの場合はアーカイブ復活もしない）
+            if not treat_as_distinct_new and ikey is not None and ikey in archive_identity_to_idx:
                 arch_idx = archive_identity_to_idx[ikey]
                 arch_rec = archive_records[arch_idx]
                 old_pid     = str(arch_rec.get(ID_COL, "")).strip()
