@@ -530,7 +530,7 @@ def process_grace_period(
     new_db_df      = pd.DataFrame(keep_records,    columns=COLUMNS)
     new_archive_df = pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
     if confirmed:
-        logger.info(f"成約・取消確定: {len(confirmed)}件（猶予{grace_days}日経過）")
+        logger.info(f"成約・取消確定: {len(confirmed)}件（{confirm_misses}回連続未検出）")
     return new_db_df, new_archive_df, confirmed, log_rows
 
 
