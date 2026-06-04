@@ -252,8 +252,8 @@ def merge_batch(
                     continue
 
             # アーカイブ（成約・取消シート）に同一物件がないか確認
-            # （別物件と判定済みの場合 or チェック専用モードならアーカイブ復活もしない）
-            if not skip_new and not treat_as_distinct_new and ikey is not None and ikey in archive_identity_to_idx:
+            # （別物件と判定済みの場合はアーカイブ復活もしない）
+            if not treat_as_distinct_new and ikey is not None and ikey in archive_identity_to_idx:
                 arch_idx = archive_identity_to_idx[ikey]
                 arch_rec = archive_records[arch_idx]
                 old_pid     = str(arch_rec.get(ID_COL, "")).strip()
