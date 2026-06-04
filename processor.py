@@ -107,10 +107,13 @@ def merge_batch(
     today: str,
     now_str: str,
     archive_df: pd.DataFrame | None = None,
+    skip_new: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict, list[dict]]:
     """
     複数条件分のスクレイプ結果をDBにマージする。
     archive_df が渡された場合、identityがアーカイブに一致したら成約・取消から復活させる。
+    skip_new=True の場合、DBに存在しない真の新規物件の追加とアーカイブ復活をスキップする
+    （既存物件の存在確認だけに使うチェック専用モード）。
     Returns:
       - 更新後のdb_df
       - 更新後のarchive_df（復活で除去された行が抜けたもの）
@@ -249,8 +252,8 @@ def merge_batch(
                     continue
 
             # アーカイブ（成約・取消シート）に同一物件がないか確認
-            # （別物件と判定済みの場合はアーカイブ復活もしない）
-            if not treat_as_distinct_new and ikey is not None and ikey in archive_identity_to_idx:
+            # （別物件と判定済みの場合 or チェック専用モードならアーカイブ復活もしない）
+            if not skip_new and not treat_as_distinct_new and ikey is not None and ikey in archive_identity_to_idx:
                 arch_idx = archive_identity_to_idx[ikey]
                 arch_rec = archive_records[arch_idx]
                 old_pid     = str(arch_rec.get(ID_COL, "")).strip()
@@ -285,6 +288,9 @@ def merge_batch(
                 continue
 
             # 真の新規物件
+            if skip_new:
+                # チェック専用モード：新規物件はDBに追加しない
+                continue
             new_rec = {col: prop.get(col, "") for col in COLUMNS}
             new_rec["検出条件"]   = condition_name
             new_rec["状態"]        = STATUS_ACTIVE

@@ -218,8 +218,18 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         print("config.json の search_conditions が空です。条件を登録してください。")
         return
 
-    ans = input("図面PDFをダウンロードして印刷しますか? [y/N]: ").strip().lower()
-    dl_zumen = ans == "y"
+    # モード別に最初の質問を変える
+    if mode == "half_weekly":
+        # クリーニングは図面DLしない。代わりに「DBに保存するか」を聞く
+        # 保存しない＝既存物件の存在確認だけのチェック専用モード
+        ans = input("DBに保存しますか?（n=既存物件の存在確認のみ） [y/N]: ").strip().lower()
+        save_mode = ans == "y"
+        dl_zumen = False
+        skip_new = not save_mode
+    else:
+        ans = input("図面PDFをダウンロードして印刷しますか? [y/N]: ").strip().lower()
+        dl_zumen = ans == "y"
+        skip_new = False
 
     # 既存DBから物件番号セット（+ 図面なしIDセット）を取得
     existing_db = load_db(db_path)
@@ -259,7 +269,10 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     db_df      = load_db(db_path)
     archive_df = load_archive(db_path)
 
-    db_df, archive_df, diff, log_rows = merge_batch(db_df, cleaned, today, now_str, archive_df=archive_df)
+    db_df, archive_df, diff, log_rows = merge_batch(
+        db_df, cleaned, today, now_str,
+        archive_df=archive_df, skip_new=skip_new,
+    )
 
     candidates: list[dict] = []
     confirmed: list[dict] = []
