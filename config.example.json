@@ -15,6 +15,9 @@
   ],
 
   "storage": {
+    "backend":      "excel",
+    "spreadsheet_id":       "（backend=sheets のとき）スプレッドシートのID",
+    "service_account_json": "service_account.json",
     "db_path":      "reins_db.xlsx",
     "export_dir":   "exports",
     "log_path":     "reins_auto.log",

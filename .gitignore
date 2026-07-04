@@ -1,5 +1,7 @@
 # 認証情報を含むためコミット禁止
 config.json
+service_account.json
+*service_account*.json
 
 # ブラウザの永続プロファイル（ログイン情報・Cookie含む）
 browser_profile/

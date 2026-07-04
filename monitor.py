@@ -27,7 +27,7 @@ from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
     restore_candidates, confirm_removals, cleanup_db, STATUS_CANDIDATE,
-    load_state, save_state,
+    load_state, save_state, configure_storage,
 )
 from rules import apply_rules
 from mailer import send_email, build_summary_email
@@ -684,7 +684,11 @@ def main() -> None:
     cfg  = load_config()
     setup_logging(cfg["storage"]["log_path"])
 
-    logger.info(f"=== REINS自動監視開始 mode={mode} {datetime.now():%Y-%m-%d %H:%M} ===")
+    # ストレージ backend（excel / sheets）を設定
+    configure_storage(cfg["storage"])
+
+    backend = cfg["storage"].get("backend", "excel")
+    logger.info(f"=== REINS自動監視開始 mode={mode} backend={backend} {datetime.now():%Y-%m-%d %H:%M} ===")
 
     if mode == "test_mail":
         diff = {
