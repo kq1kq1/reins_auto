@@ -55,7 +55,15 @@ VALID_MODES = (
 
 
 def load_config() -> dict:
-    p = Path(__file__).parent / "config.json"
+    # 実行ディレクトリ優先、無ければスクリプトと同じ場所（ポータブル配布対応）
+    p = None
+    for base in (Path.cwd(), Path(__file__).parent):
+        cand = base / "config.json"
+        if cand.exists():
+            p = cand
+            break
+    if p is None:
+        raise FileNotFoundError("config.json が見つかりません（実行フォルダに置いてください）")
     cfg = json.loads(p.read_text(encoding="utf-8"))
 
     import os
