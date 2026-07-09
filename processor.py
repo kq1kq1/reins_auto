@@ -564,7 +564,9 @@ def mark_removal_candidates(
             candidates.append(dict(rec))
             log_rows.append(_log_row(now_str, rec.get("検出条件", ""), "取消候補(1回目)", rec))
         elif status == STATUS_CANDIDATE:
-            # 既に取消候補で今回も見つからない → カウントアップ
+            # 既に取消候補で今回も見つからない → カウントアップのみ
+            # （継続未検出はログに残さない。回数はDBの「未検出回数」列で追える。
+            #   毎週数百行のログ肥大を防ぐため）
             try:
                 cnt = int(str(rec.get("未検出回数", "0") or "0"))
             except ValueError:
@@ -572,7 +574,6 @@ def mark_removal_candidates(
             cnt += 1
             rec["未検出回数"] = str(cnt)
             incremented += 1
-            log_rows.append(_log_row(now_str, rec.get("検出条件", ""), f"取消候補({cnt}回目)", rec))
 
     new_df = pd.DataFrame(records, columns=COLUMNS)
     logger.info(f"取消候補マーキング: 新規{len(candidates)}件 / 継続未検出{incremented}件")
