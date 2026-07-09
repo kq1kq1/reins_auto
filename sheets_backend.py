@@ -159,20 +159,65 @@ def _write_ws(ss, title: str, df: pd.DataFrame, columns: list[str]) -> None:
         pass
 
 
-def write_all(
+def write_db_archive(
     cfg: dict,
     db_df: pd.DataFrame,
     archive_df: pd.DataFrame,
-    log_df: pd.DataFrame,
     db_cols: list[str],
     removed_cols: list[str],
-    log_cols: list[str],
 ) -> None:
-    """物件DB・成約取消・変更ログの3シートをまとめて書き込む。"""
+    """物件DB・成約取消の2シートを丸ごと上書きする（ログは別途 append_logs で追記）。"""
     ss = _connect(cfg)
     _write_ws(ss, "物件DB",   db_df,      db_cols)
     _write_ws(ss, "成約・取消", archive_df, removed_cols)
-    _write_ws(ss, "変更ログ",   log_df,     log_cols)
+
+
+def append_logs(cfg: dict, rows_by_year: dict, log_cols: list[str]) -> None:
+    """変更ログを年別シート（変更ログ_YYYY）に末尾追記する。
+    全体を読み書きせず append するので行数が増えても高速。
+    rows_by_year: {"2026": [[...], ...]} ヘッダー無しの値行リスト。
+    """
+    if not rows_by_year:
+        return
+    ss = _connect(cfg)
+    for year, rows in rows_by_year.items():
+        if not rows:
+            continue
+        title = f"変更ログ_{year}"
+        ws = _get_ws(ss, title)
+        if ws is None:
+            ws = ss.add_worksheet(title=title, rows=len(rows) + 1, cols=len(log_cols))
+            ws.update(range_name="A1", values=[log_cols], value_input_option="RAW")
+            try:
+                ws.freeze(rows=1)
+                ws.format("1:1", {"textFormat": {"bold": True}})
+            except Exception:
+                pass
+        ws.append_rows(rows, value_input_option="RAW")
+
+
+def write_sheet(cfg: dict, title: str, df: pd.DataFrame, columns: list[str]) -> None:
+    """任意シートを丸ごと上書き（マイグレーション用）。"""
+    ss = _connect(cfg)
+    _write_ws(ss, title, df, columns)
+
+
+def delete_sheet(cfg: dict, title: str) -> None:
+    """指定シートを削除（存在すれば）。マイグレーション用。"""
+    ss = _connect(cfg)
+    ws = _get_ws(ss, title)
+    if ws is not None:
+        try:
+            ss.del_worksheet(ws)
+        except Exception as e:
+            logger.warning(f"シート削除失敗 [{title}]: {e}")
+
+
+def list_log_year_sheets(cfg: dict) -> list[str]:
+    """変更ログ_YYYY 形式のシート名一覧を返す。"""
+    ss = _connect(cfg)
+    names = [ws.title for ws in ss.worksheets()]
+    return sorted(n for n in names if n.startswith("変更ログ_"))
 
 
 # ----------------------------------------------------------------

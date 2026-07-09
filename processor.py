@@ -349,6 +349,71 @@ def merge_batch(
 
 
 # ----------------------------------------------------------------
+# 変更ログのマイグレーション（単一シート → 年別シート＋重複削除）
+# ----------------------------------------------------------------
+
+def migrate_logs(db_path: str) -> dict:
+    """
+    既存の単一「変更ログ」シートを年別（変更ログ_YYYY）に分割する。
+    完全重複行（全列一致）は削除する。移行後は元の「変更ログ」シートを削除。
+    Returns: 統計 dict
+    """
+    old = load_log(db_path)  # 旧「変更ログ」シート
+    total_before = len(old)
+    if old.empty:
+        return {"before": 0, "dedup_removed": 0, "after": 0, "years": {}}
+
+    # 列を揃える
+    for c in LOG_COLUMNS:
+        if c not in old.columns:
+            old[c] = ""
+    old = old[LOG_COLUMNS].fillna("").astype(str)
+
+    # 完全重複を削除
+    before_dedup = len(old)
+    old = old.drop_duplicates(keep="first").reset_index(drop=True)
+    dedup_removed = before_dedup - len(old)
+
+    # 年別に分割
+    def _yr(v: str) -> str:
+        m = re.match(r"(\d{4})", str(v or "").strip())
+        return m.group(1) if m else "不明"
+
+    old["_year"] = old["日時"].map(_yr)
+    years_stat: dict[str, int] = {}
+
+    if _backend() == "sheets":
+        import sheets_backend
+        for year, grp in old.groupby("_year"):
+            df = grp[LOG_COLUMNS]
+            sheets_backend.write_sheet(_STORAGE, f"{SHEET_LOG}_{year}", df, LOG_COLUMNS)
+            years_stat[year] = len(df)
+        # 元の単一シートを削除
+        sheets_backend.delete_sheet(_STORAGE, SHEET_LOG)
+    else:
+        wb = openpyxl.load_workbook(db_path)
+        for year, grp in old.groupby("_year"):
+            title = f"{SHEET_LOG}_{year}"
+            if title in wb.sheetnames:
+                wb.remove(wb[title])
+            ws = wb.create_sheet(title=title)
+            ws.append(LOG_COLUMNS)
+            for _, r in grp[LOG_COLUMNS].iterrows():
+                ws.append([r[c] for c in LOG_COLUMNS])
+            years_stat[year] = len(grp)
+        if SHEET_LOG in wb.sheetnames:
+            wb.remove(wb[SHEET_LOG])
+        wb.save(db_path)
+
+    return {
+        "before": total_before,
+        "dedup_removed": dedup_removed,
+        "after": len(old),
+        "years": years_stat,
+    }
+
+
+# ----------------------------------------------------------------
 # クリーンアップ: 既存DBに対する一括メンテナンス
 # ----------------------------------------------------------------
 
@@ -657,31 +722,80 @@ def save_db(
     archive_df: pd.DataFrame,
     new_log_rows: list[dict],
 ) -> None:
-    """物件DB・成約取消・変更ログをまとめて保存する。"""
-    log_df = load_log(db_path)
-    log_records = log_df.to_dict("records") if not log_df.empty else []
-    log_records.extend(new_log_rows)
-    log_full = (
-        pd.DataFrame(log_records, columns=LOG_COLUMNS)
-        if log_records
-        else pd.DataFrame(columns=LOG_COLUMNS)
-    )
+    """物件DB・成約取消を上書き保存し、変更ログは年別シートに末尾追記する。"""
+    rows_by_year = _group_logs_by_year(new_log_rows)
 
     if _backend() == "sheets":
         import sheets_backend
-        sheets_backend.write_all(
-            _STORAGE, db_df, archive_df, log_full,
-            COLUMNS, REMOVED_COLUMNS, LOG_COLUMNS,
+        sheets_backend.write_db_archive(
+            _STORAGE, db_df, archive_df, COLUMNS, REMOVED_COLUMNS,
         )
+        sheets_backend.append_logs(_STORAGE, rows_by_year, LOG_COLUMNS)
     else:
-        with pd.ExcelWriter(db_path, engine="openpyxl") as writer:
-            db_df.to_excel(writer,      sheet_name=SHEET_DB,      index=False)
-            archive_df.to_excel(writer, sheet_name=SHEET_REMOVED, index=False)
-            log_full.to_excel(writer,   sheet_name=SHEET_LOG,     index=False)
+        _excel_write_db_archive(db_path, db_df, archive_df)
+        _excel_append_logs(db_path, rows_by_year)
         _apply_styles(db_path)
 
     _dst = "Sheets" if _backend() == "sheets" else db_path
     logger.info(f"DB保存完了: {_dst} アクティブ{(db_df['状態']==STATUS_ACTIVE).sum() if not db_df.empty else 0}件 取消候補{(db_df['状態']==STATUS_CANDIDATE).sum() if not db_df.empty else 0}件")
+
+
+def _log_year(row: dict) -> str:
+    """変更ログ行の『日時』から年（YYYY）を取り出す。取れなければ今年。"""
+    m = re.match(r"(\d{4})", str(row.get("日時", "") or "").strip())
+    return m.group(1) if m else datetime.now().strftime("%Y")
+
+
+def _group_logs_by_year(new_log_rows: list[dict]) -> dict:
+    """変更ログ行を年別の値行リストにまとめる。 {'2026': [[...], ...]}"""
+    by_year: dict[str, list[list]] = {}
+    for row in (new_log_rows or []):
+        y = _log_year(row)
+        vals = [str(row.get(c, "") or "") for c in LOG_COLUMNS]
+        by_year.setdefault(y, []).append(vals)
+    return by_year
+
+
+def _excel_write_db_archive(db_path: str, db_df: pd.DataFrame, archive_df: pd.DataFrame) -> None:
+    """Excel: 物件DB・成約取消シートだけを差し替え、他シート（年別ログ等）は保持する。"""
+    if Path(db_path).exists():
+        wb = openpyxl.load_workbook(db_path)
+    else:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
+    for name, df, cols in [
+        (SHEET_DB,      db_df,      COLUMNS),
+        (SHEET_REMOVED, archive_df, REMOVED_COLUMNS),
+    ]:
+        if name in wb.sheetnames:
+            wb.remove(wb[name])
+        ws = wb.create_sheet(title=name)
+        d = df.reindex(columns=cols).fillna("").astype(str)
+        ws.append(cols)
+        for _, r in d.iterrows():
+            ws.append([r[c] for c in cols])
+
+    if not wb.sheetnames:
+        wb.create_sheet(title=SHEET_DB)
+    wb.save(db_path)
+
+
+def _excel_append_logs(db_path: str, rows_by_year: dict) -> None:
+    """Excel: 変更ログを年別シート（変更ログ_YYYY）に末尾追記する。"""
+    if not rows_by_year:
+        return
+    wb = openpyxl.load_workbook(db_path)
+    for year, rows in rows_by_year.items():
+        title = f"{SHEET_LOG}_{year}"
+        if title in wb.sheetnames:
+            ws = wb[title]
+        else:
+            ws = wb.create_sheet(title=title)
+            ws.append(LOG_COLUMNS)
+        for vals in rows:
+            ws.append(vals)
+    wb.save(db_path)
 
 
 # ----------------------------------------------------------------

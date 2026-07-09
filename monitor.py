@@ -26,7 +26,7 @@ from scraper import REINSScraper
 from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
-    restore_candidates, confirm_removals, cleanup_db, STATUS_CANDIDATE,
+    restore_candidates, confirm_removals, cleanup_db, migrate_logs, STATUS_CANDIDATE,
     load_state, save_state, configure_storage,
 )
 from rules import apply_rules
@@ -48,7 +48,7 @@ def setup_logging(log_path: str) -> None:
 logger = logging.getLogger(__name__)
 
 VALID_MODES = (
-    "daily", "weekly", "restore", "confirm", "cleanup",
+    "daily", "weekly", "restore", "confirm", "cleanup", "migrate_logs",
     "half_morning", "half_daily", "half_weekly",
     "morning", "evening", "auto_weekly", "bootstrap", "debug", "test_mail",
 )
@@ -397,6 +397,36 @@ def run_cleanup(cfg: dict) -> None:
     print("=" * 60)
 
 
+def run_migrate_logs(cfg: dict) -> None:
+    """単一の変更ログを年別シートに分割し、完全重複を削除する（1回だけ実行）。"""
+    import shutil
+
+    db_path = cfg["storage"]["db_path"]
+    backend = cfg["storage"].get("backend", "excel")
+
+    # excelバックエンドならローカルファイルをバックアップ
+    if backend == "excel" and Path(db_path).exists():
+        backup = Path(db_path).with_suffix(f".backup_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+        shutil.copy2(db_path, backup)
+        print(f"バックアップ作成: {backup.name}")
+    elif backend == "sheets":
+        print("※ Sheetsバックエンドです。念のため事前にスプレッドシートを複製しておくと安全です。")
+
+    print("変更ログの年別分割・重複削除を実行します...")
+    stats = migrate_logs(db_path)
+
+    print()
+    print("=" * 60)
+    print("変更ログ マイグレーション完了")
+    print(f"  移行前の行数:   {stats['before']}")
+    print(f"  完全重複を削除: {stats['dedup_removed']}件")
+    print(f"  移行後の行数:   {stats['after']}")
+    print(f"  年別内訳:")
+    for y, n in sorted(stats["years"].items()):
+        print(f"    変更ログ_{y}: {n}行")
+    print("=" * 60)
+
+
 def run_confirm(cfg: dict) -> None:
     db_path = cfg["storage"]["db_path"]
     print()
@@ -717,6 +747,8 @@ def main() -> None:
         run_confirm(cfg)
     elif mode == "cleanup":
         run_cleanup(cfg)
+    elif mode == "migrate_logs":
+        run_migrate_logs(cfg)
     elif mode in ("daily", "weekly"):
         asyncio.run(run_loop(cfg, mode))
     elif mode in ("half_morning", "half_daily", "half_weekly"):
