@@ -253,3 +253,92 @@ def write_state(cfg: dict, state: dict) -> None:
         ws.update(range_name="A1", values=values, value_input_option="RAW")
     except Exception as e:
         logger.warning(f"Sheets state保存失敗: {e}")
+
+
+# ----------------------------------------------------------------
+# チーム共通設定（設定シート / 検索条件シート）
+# ----------------------------------------------------------------
+
+SHEET_SETTINGS   = "設定"
+SHEET_CONDITIONS = "検索条件"
+
+
+def read_settings(cfg: dict) -> dict:
+    """「設定」シートを key-value の dict で返す。無ければ空。"""
+    try:
+        ss = _connect(cfg)
+        ws = _get_ws(ss, SHEET_SETTINGS)
+        if ws is None:
+            return {}
+        out = {}
+        for row in ws.get_all_values():
+            if len(row) >= 2 and str(row[0]).strip():
+                out[str(row[0]).strip()] = str(row[1]).strip()
+        return out
+    except Exception as e:
+        logger.warning(f"設定シート読込失敗（空扱い）: {e}")
+        return {}
+
+
+def write_settings(cfg: dict, settings: dict) -> None:
+    """「設定」シートに key-value を書き込む（ヘッダー付き）。"""
+    ss = _connect(cfg)
+    ws = _get_or_create_ws(ss, SHEET_SETTINGS, 2)
+    values = [["キー", "値"]] + [[str(k), str(v)] for k, v in settings.items()]
+    ws.resize(rows=max(len(values), 1), cols=2)
+    ws.clear()
+    ws.update(range_name="A1", values=values, value_input_option="RAW")
+    try:
+        ws.freeze(rows=1)
+        ws.format("1:1", {"textFormat": {"bold": True}})
+    except Exception:
+        pass
+
+
+def read_conditions(cfg: dict) -> tuple[list, list]:
+    """「検索条件」シートから (daily, weekly) の条件リストを返す。
+    シート形式: 列 [区分, id, name]。区分は 'daily' / 'weekly'。
+    """
+    try:
+        ss = _connect(cfg)
+        ws = _get_ws(ss, SHEET_CONDITIONS)
+        if ws is None:
+            return [], []
+        daily, weekly = [], []
+        rows = ws.get_all_values()
+        for row in rows[1:]:  # ヘッダー行を飛ばす
+            if len(row) < 2:
+                continue
+            kbn = str(row[0]).strip().lower()
+            cid = str(row[1]).strip()
+            name = str(row[2]).strip() if len(row) >= 3 else ""
+            if not cid:
+                continue
+            item = {"id": int(cid) if cid.isdigit() else cid, "name": name}
+            if kbn == "weekly":
+                weekly.append(item)
+            elif kbn == "daily":
+                daily.append(item)
+        return daily, weekly
+    except Exception as e:
+        logger.warning(f"検索条件シート読込失敗（空扱い）: {e}")
+        return [], []
+
+
+def write_conditions(cfg: dict, daily: list, weekly: list) -> None:
+    """「検索条件」シートに daily/weekly の条件を書き込む。"""
+    ss = _connect(cfg)
+    ws = _get_or_create_ws(ss, SHEET_CONDITIONS, 3)
+    values = [["区分", "id", "name"]]
+    for c in (daily or []):
+        values.append(["daily", str(c.get("id", "")), str(c.get("name", ""))])
+    for c in (weekly or []):
+        values.append(["weekly", str(c.get("id", "")), str(c.get("name", ""))])
+    ws.resize(rows=max(len(values), 1), cols=3)
+    ws.clear()
+    ws.update(range_name="A1", values=values, value_input_option="RAW")
+    try:
+        ws.freeze(rows=1)
+        ws.format("1:1", {"textFormat": {"bold": True}})
+    except Exception:
+        pass

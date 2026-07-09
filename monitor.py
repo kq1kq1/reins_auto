@@ -48,7 +48,7 @@ def setup_logging(log_path: str) -> None:
 logger = logging.getLogger(__name__)
 
 VALID_MODES = (
-    "daily", "weekly", "restore", "confirm", "cleanup", "migrate_logs",
+    "daily", "weekly", "restore", "confirm", "cleanup", "migrate_logs", "push_config",
     "half_morning", "half_daily", "half_weekly",
     "morning", "evening", "auto_weekly", "bootstrap", "debug", "test_mail",
 )
@@ -71,6 +71,72 @@ def load_config() -> dict:
         if val:
             cfg[section][key] = val
     return cfg
+
+
+# チームで共有する設定キー（スカラー値）: config内のパス → 表示名
+_SHARED_SETTING_KEYS = {
+    "removal_confirm_misses": ("storage", "removal_confirm_misses"),
+    "removal_min_coverage":   ("storage", "removal_min_coverage"),
+    "pdf_keep_days":          ("storage", "pdf_keep_days"),
+}
+
+
+def _apply_shared_config(cfg: dict) -> None:
+    """backend=sheets のとき、検索条件と共通設定をスプレッドシートから読み込んで
+    ローカルの cfg を上書きする。スプシ側が空なら何もしない（ローカル設定のまま）。"""
+    try:
+        import sheets_backend
+        # 検索条件
+        daily, weekly = sheets_backend.read_conditions(cfg["storage"])
+        if daily:
+            cfg["search_conditions"] = daily
+        if weekly:
+            cfg["weekly_search_conditions"] = weekly
+        if daily or weekly:
+            logger.info(f"スプシから検索条件を取得: daily {len(daily)}件 / weekly {len(weekly)}件")
+
+        # 共通スカラー設定
+        settings = sheets_backend.read_settings(cfg["storage"])
+        for key, (section, ckey) in _SHARED_SETTING_KEYS.items():
+            if key in settings and settings[key] != "":
+                raw = settings[key]
+                # 数値っぽければ数値化
+                try:
+                    val = int(raw) if raw.isdigit() else float(raw)
+                except (ValueError, AttributeError):
+                    val = raw
+                cfg[section][ckey] = val
+        if settings:
+            logger.info(f"スプシから共通設定を取得: {list(settings.keys())}")
+    except Exception as e:
+        logger.warning(f"共通設定の取得に失敗（ローカル設定を使用）: {e}")
+
+
+def run_push_config(cfg: dict) -> None:
+    """ローカル config.json の検索条件・共通設定をスプレッドシートへ書き出す。"""
+    import sheets_backend
+    storage = dict(cfg["storage"])
+    # backend が excel でも sheets 接続情報があれば書き込めるようにする
+    configure_storage({**storage, "backend": "sheets"})
+
+    daily  = cfg.get("search_conditions", [])
+    weekly = cfg.get("weekly_search_conditions", [])
+    sheets_backend.write_conditions(storage, daily, weekly)
+
+    settings = {}
+    for key, (section, ckey) in _SHARED_SETTING_KEYS.items():
+        if ckey in cfg.get(section, {}):
+            settings[key] = cfg[section][ckey]
+    sheets_backend.write_settings(storage, settings)
+
+    print()
+    print("=" * 60)
+    print("設定をスプレッドシートへ書き出しました")
+    print(f"  検索条件(daily) : {len(daily)}件")
+    print(f"  検索条件(weekly): {len(weekly)}件")
+    print(f"  共通設定        : {settings}")
+    print("  → スプレッドシートに「検索条件」「設定」シートが作成されました")
+    print("=" * 60)
 
 
 # ================================================================
@@ -719,6 +785,15 @@ def main() -> None:
 
     backend = cfg["storage"].get("backend", "excel")
     logger.info(f"=== REINS自動監視開始 mode={mode} backend={backend} {datetime.now():%Y-%m-%d %H:%M} ===")
+
+    # 設定をスプシへ書き出すモード（backendに関係なく実行可）
+    if mode == "push_config":
+        run_push_config(cfg)
+        return
+
+    # backend=sheets のときはチーム共通設定（検索条件・閾値）をスプシから取り込む
+    if backend == "sheets":
+        _apply_shared_config(cfg)
 
     if mode == "test_mail":
         diff = {
