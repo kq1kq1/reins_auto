@@ -82,11 +82,27 @@ def load_config() -> dict:
 
 
 # チームで共有する設定キー（スカラー値）: config内のパス → 表示名
+# チームで共有するスカラー設定: 表示名 → (section, key, 型)
+# 型: "int" / "float" / "bool" / "str"
 _SHARED_SETTING_KEYS = {
-    "removal_confirm_misses": ("storage", "removal_confirm_misses"),
-    "removal_min_coverage":   ("storage", "removal_min_coverage"),
-    "pdf_keep_days":          ("storage", "pdf_keep_days"),
+    "removal_confirm_misses": ("storage",      "removal_confirm_misses", "int"),
+    "removal_min_coverage":   ("storage",      "removal_min_coverage",   "float"),
+    "pdf_keep_days":          ("storage",      "pdf_keep_days",          "int"),
+    "send_daily_summary":     ("notification", "send_daily_summary",     "bool"),
+    "paper_size":             ("print",        "paper_size",             "str"),
+    "color_mode":             ("print",        "color_mode",             "str"),
 }
+
+
+def _parse_val(raw: str, typ: str):
+    raw = str(raw).strip()
+    if typ == "int":
+        return int(float(raw)) if raw else 0
+    if typ == "float":
+        return float(raw) if raw else 0.0
+    if typ == "bool":
+        return raw.lower() in ("true", "1", "yes", "はい", "on")
+    return raw
 
 
 def _apply_shared_config(cfg: dict) -> None:
@@ -103,19 +119,22 @@ def _apply_shared_config(cfg: dict) -> None:
         if daily or weekly:
             logger.info(f"スプシから検索条件を取得: daily {len(daily)}件 / weekly {len(weekly)}件")
 
-        # 共通スカラー設定
         settings = sheets_backend.read_settings(cfg["storage"])
-        for key, (section, ckey) in _SHARED_SETTING_KEYS.items():
+        if not settings:
+            return
+
+        # スカラー設定
+        for key, (section, ckey, typ) in _SHARED_SETTING_KEYS.items():
             if key in settings and settings[key] != "":
-                raw = settings[key]
-                # 数値っぽければ数値化
-                try:
-                    val = int(raw) if raw.isdigit() else float(raw)
-                except (ValueError, AttributeError):
-                    val = raw
-                cfg[section][ckey] = val
-        if settings:
-            logger.info(f"スプシから共通設定を取得: {list(settings.keys())}")
+                cfg.setdefault(section, {})[ckey] = _parse_val(settings[key], typ)
+
+        # 通知先メール（カンマ/改行区切り → リスト）
+        if settings.get("email_to", "").strip():
+            addrs = [a.strip() for a in re.split(r"[,\s]+", settings["email_to"]) if a.strip()]
+            if addrs:
+                cfg.setdefault("notification", {})["email_to"] = addrs
+
+        logger.info(f"スプシから共通設定を取得: {list(settings.keys())}")
     except Exception as e:
         logger.warning(f"共通設定の取得に失敗（ローカル設定を使用）: {e}")
 
@@ -132,9 +151,18 @@ def run_push_config(cfg: dict) -> None:
     sheets_backend.write_conditions(storage, daily, weekly)
 
     settings = {}
-    for key, (section, ckey) in _SHARED_SETTING_KEYS.items():
+    for key, (section, ckey, typ) in _SHARED_SETTING_KEYS.items():
         if ckey in cfg.get(section, {}):
-            settings[key] = cfg[section][ckey]
+            val = cfg[section][ckey]
+            settings[key] = "true" if (typ == "bool" and val) else ("false" if typ == "bool" else val)
+
+    # 通知先メールリストをカンマ区切りで
+    email_to = cfg.get("notification", {}).get("email_to", "")
+    if isinstance(email_to, (list, tuple)):
+        settings["email_to"] = ", ".join(email_to)
+    elif email_to:
+        settings["email_to"] = str(email_to)
+
     sheets_backend.write_settings(storage, settings)
 
     print()
