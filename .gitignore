@@ -6,6 +6,9 @@ service_account.json
 # ブラウザの永続プロファイル（ログイン情報・Cookie含む）
 browser_profile/
 
+# ポータブル配布物（Python/ブラウザ同梱・秘密情報・巨大zip。ビルド成果物なので追跡しない）
+reins_portable/
+
 # DB・ログ・PDF出力
 reins_db.xlsx
 reins_db.backup_*.xlsx
