@@ -71,10 +71,23 @@ def print_pdf(pdf_path: Path, print_cfg: dict | None = None) -> bool:
 
 
 def _find_sumatra(custom_path: str) -> str | None:
-    """SumatraPDFのexeを探す。見つからなければNone。"""
+    """SumatraPDFのexeを探す。見つからなければNone。
+
+    ポータブル配布時に同梱した SumatraPDF.exe を最優先で使う。
+    フォルダをどこに置いても動くよう、スクリプト位置基準で探索する
+    （config の sumatra_path やインストール先に依存しない）。
+    """
+    here = Path(__file__).resolve().parent
     candidates = []
     if custom_path:
         candidates.append(custom_path)
+    # 同梱exe（配布フォルダ直下 = app/ の隣、または app/ 内・専用フォルダ）
+    candidates += [
+        str(here.parent / "SumatraPDF.exe"),
+        str(here / "SumatraPDF.exe"),
+        str(here.parent / "sumatra" / "SumatraPDF.exe"),
+    ]
+    # 通常インストール先（ローカル開発PC向け）
     candidates += [
         os.path.expandvars(r"%LOCALAPPDATA%\SumatraPDF\SumatraPDF.exe"),
         r"C:\Program Files\SumatraPDF\SumatraPDF.exe",
