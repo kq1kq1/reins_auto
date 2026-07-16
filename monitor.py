@@ -397,10 +397,13 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
 
     save_db(db_path, db_df, archive_df, log_rows)
 
-    # 半自動朝が成功したら state を今日に更新
-    if mode == "half_morning":
-        state["half_morning_last_run"] = today
-        save_state(state_path, state)
+    # どの半自動実行でも「最終実行日」を今日に更新する。
+    # backend=sheets なら共有の「実行状態」シートに書かれるので、
+    # 誰が実行しても連続する（人ごとではなく実行ごと）。
+    # 次回の半自動朝は、この日付〜今日 の範囲で検索する。
+    state["half_morning_last_run"] = today
+    state["last_run_at"]           = now_str  # 参考：最後にいつ誰かが実行したか
+    save_state(state_path, state)
 
     # グループ化された新規物件は最安1件だけを通知/印刷対象に絞る
     # グループ化は merge_batch で全条件まとめて済んでいる（条件をまたいで一意なグループID）
