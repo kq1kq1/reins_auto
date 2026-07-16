@@ -349,6 +349,10 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
         save_mode = ans == "y"
         dl_zumen = False
         skip_new = not save_mode
+    elif mode == "half_morning":
+        # 新規取得は毎回自動で図面DL＆印刷する（確認しない）
+        dl_zumen = True
+        skip_new = False
     else:
         ans = input("図面PDFをダウンロードして印刷しますか? [y/N]: ").strip().lower()
         dl_zumen = ans == "y"
