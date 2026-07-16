@@ -45,6 +45,27 @@ def setup_logging(log_path: str) -> None:
     )
 
 
+def _setup_bundled_browser() -> None:
+    """ポータブル配布時、同梱の browser フォルダを Playwright に使わせる。
+    フォルダをどこに置いても動くよう、スクリプト位置からの絶対パスで自動指定する。
+    （.bat の環境変数設定に依存しない・ユーザー名やパスに左右されない）
+    通常のローカル開発（browser フォルダが無い）では何もしない。"""
+    import os
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here.parent / "browser",   # 配布構成: app/ の隣の browser/
+        here / "browser",
+        Path.cwd() / "browser",
+    ]
+    for b in candidates:
+        try:
+            if b.exists() and any(b.glob("chromium-*")):
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(b.resolve())
+                return
+        except Exception:
+            continue
+
+
 logger = logging.getLogger(__name__)
 
 VALID_MODES = (
@@ -817,6 +838,8 @@ def _print_debug(diff: dict, candidates: list[dict], confirmed: list[dict]) -> N
 
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "daily"
+    # 同梱ブラウザを使う設定（ポータブル配布時。フォルダをどこに置いても動く）
+    _setup_bundled_browser()
     cfg  = load_config()
     setup_logging(cfg["storage"]["log_path"])
 
