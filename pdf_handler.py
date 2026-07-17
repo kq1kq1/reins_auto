@@ -110,6 +110,10 @@ def _print_with_sumatra(sumatra: str, pdf_path: Path, cfg: dict) -> bool:
         settings_parts.append("monochrome")
     elif color == "color":
         settings_parts.append("color")
+    # 片面/両面（simplex=片面, duplex=両面。空ならプリンタ既定）
+    duplex = cfg.get("duplex_mode", "")
+    if duplex:
+        settings_parts.append(duplex)
     settings_parts.append("fit")
     settings = ",".join(settings_parts)
 
