@@ -54,7 +54,16 @@ class DbLoadError(RuntimeError):
 
 
 class DbWriteError(RuntimeError):
-    """DBの保存に失敗した（通信エラー、または異常な件数減少を検知して中止した）。"""
+    """DBの保存に失敗した（通信エラーなど）。"""
+
+
+class DbShrinkError(DbWriteError):
+    """件数が異常に減るため保存を中止した。
+
+    通信エラーと違い、内容を見て「正しい」と判断できれば続行してよいので
+    呼び出し側が確認プロンプトを出せるよう別クラスにしている。
+    （例: 週次で猶予切れの取消候補が大量に確定するケース）
+    """
 
 
 # 直近に読み込んだ行数。保存前に「異常に減っていないか」を確かめるために覚えておく。
@@ -560,8 +569,13 @@ def cleanup_db(db_path: str) -> dict:
         pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
         if archive_records else pd.DataFrame(columns=REMOVED_COLUMNS)
     )
-    # クリーンアップは重複統合で件数が大きく減るのが正常な処理。
-    # かつ monitor 側でバックアップを取ってから呼ばれるので、縮小チェックを免除する。
+    # クリーンアップは重複統合で件数が大きく減るのが正常な処理なので縮小チェックを免除する。
+    # ただしその分ガードが外れるため、書き換える前の状態を必ずCSVに残しておく
+    # （monitor側のバックアップはローカルxlsxが対象で、Sheetsバックエンドでは効かないため）。
+    backup = _emergency_dump(db_df, archive_df, [], label="クリーンアップ前バックアップ")
+    logger.info(f"クリーンアップ前バックアップ: {backup}")
+    print(f"実行前の状態をバックアップしました: {backup}")
+
     save_db(db_path, new_db_df, new_archive_df, log_rows, allow_shrink=True)
 
     return {
@@ -782,18 +796,19 @@ def _sanity_check_before_write(db_df: pd.DataFrame, archive_df: pd.DataFrame) ->
         problems.append(f"成約・取消: {prev_arch}件 → {now_arch}件")
 
     if problems:
-        raise DbWriteError(
+        raise DbShrinkError(
             "保存を中止しました（データが異常に減っています）: " + " / ".join(problems)
-            + "\n通信不良でDBを読めていない可能性があります。"
-            "意図的に大量削除した場合を除き、そのまま再実行してください。"
         )
 
 
 def _emergency_dump(db_df: pd.DataFrame, archive_df: pd.DataFrame,
-                    new_log_rows: list[dict]) -> str:
-    """保存できなかったデータをローカルCSVに退避する。戻り値は退避先フォルダ。"""
+                    new_log_rows: list[dict], label: str = "緊急退避") -> str:
+    """DBの内容をローカルCSVに書き出す。戻り値は出力先フォルダ。
+
+    保存失敗時の退避と、破壊的なメンテ処理前のバックアップの両方で使う。
+    """
     ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = Path(_STORAGE.get("export_dir", "exports")) / f"緊急退避_{ts}"
+    out = Path(_STORAGE.get("export_dir", "exports")) / f"{label}_{ts}"
     try:
         out.mkdir(parents=True, exist_ok=True)
         if db_df is not None and not db_df.empty:
@@ -841,7 +856,9 @@ def save_db(
         # 保存できなかったデータは必ずローカルに逃がしてから落とす
         dump = _emergency_dump(db_df, archive_df, new_log_rows)
         logger.error(f"DB保存に失敗: {e} → 退避先: {dump}", exc_info=True)
-        raise DbWriteError(f"{e}\n保存できなかったデータの退避先: {dump}") from e
+        # 件数減少（DbShrinkError）は呼び出し側で確認プロンプトを出せるよう型を保つ
+        cls = DbShrinkError if isinstance(e, DbShrinkError) else DbWriteError
+        raise cls(f"{e}\n保存できなかったデータの退避先: {dump}") from e
 
     # 保存できた件数を次回チェックの基準にする
     _LOADED_ROWS["db"]      = 0 if db_df is None or db_df.empty else len(db_df)

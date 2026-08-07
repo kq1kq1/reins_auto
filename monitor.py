@@ -28,7 +28,7 @@ from processor import (
     merge_batch, mark_removal_candidates, process_grace_period,
     restore_candidates, confirm_removals, cleanup_db, migrate_logs, STATUS_CANDIDATE,
     load_state, save_state, configure_storage,
-    DbLoadError, DbWriteError,
+    DbLoadError, DbWriteError, DbShrinkError,
 )
 from rules import apply_rules
 from mailer import send_email, build_summary_email
@@ -269,7 +269,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
             logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")
             print(f"⚠️ 今回の取得が少なすぎます（{fc}/{ac}={cov:.0%}）。取消検知をスキップしました。")
 
-    save_db(db_path, db_df, archive_df, log_rows)
+    _save_db_confirmed(db_path, db_df, archive_df, log_rows)
 
     # グループ化された新規物件は最安1件だけを通知/印刷対象に絞る
     new_filtered = _filter_cheapest_per_group(diff["new"])
@@ -421,7 +421,7 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
             logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")
             print(f"⚠️ 今回の取得が少なすぎます（{fc}/{ac}={cov:.0%}）。取消検知をスキップしました。")
 
-    save_db(db_path, db_df, archive_df, log_rows)
+    _save_db_confirmed(db_path, db_df, archive_df, log_rows)
 
     # 「最終実行日」は新規取得（half_morning）のときだけ更新する。
     # backend=sheets なら共有の「実行状態」シートに書かれるので、
@@ -920,6 +920,33 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("=== 完了 ===")
+
+
+def _save_db_confirmed(db_path, db_df, archive_df, log_rows) -> None:
+    """保存する。件数が大きく減る場合だけ、内容を見せて実行者に確認を取る。
+
+    週次で猶予切れの取消候補がまとめて確定するなど、大幅に減るのが正しい場合もある。
+    そこで通信エラー（＝問答無用で中止）と、件数減少（＝確認すれば続行可）を分けて扱う。
+    """
+    try:
+        save_db(db_path, db_df, archive_df, log_rows)
+        return
+    except DbShrinkError as e:
+        print()
+        print("=" * 60)
+        print("⚠️ 保存前チェックに引っかかりました")
+        print("=" * 60)
+        print(f"{e}")
+        print()
+        print("通信不良でDBを読めていない場合は「n」で中止してください（データは守られます）。")
+        print("取消の大量確定など、減るのが正しいと分かっている場合のみ「y」。")
+        try:
+            ans = input("この内容で保存しますか? [y/N]: ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans != "y":
+            raise
+    save_db(db_path, db_df, archive_df, log_rows, allow_shrink=True)
 
 
 def _print_db_error(title: str, e: Exception, wrote_something: bool = False) -> None:
