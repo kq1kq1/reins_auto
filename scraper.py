@@ -53,6 +53,11 @@ COLUMN_LAYOUTS = {
 }
 
 
+# 保存検索条件のoptionは "26: 江戸川区マンション" の形式。
+# 検索結果画面の並び替えselectと区別するために使う。
+_COND_OPTION_RE = re.compile(r'^\s*\d+\s*:')
+
+
 async def _human_wait(min_ms: int = 600, max_ms: int = 1400) -> None:
     """人が操作するような間隔でランダムに待機する"""
     ms = random.randint(min_ms, max_ms)
@@ -432,12 +437,42 @@ class REINSScraper:
     # お気に入り検索条件の選択
     # ----------------------------------------------------------------
 
-    async def _is_search_screen(self, page: Page) -> bool:
-        """保存検索条件のドロップダウンがあるか＝検索画面にいるか判定する。"""
-        try:
-            return await page.query_selector('select.p-selectbox-input.custom-select') is not None
-        except Exception:
-            return False
+    async def _find_condition_select(self, page: Page, fallback: bool = False):
+        """保存検索条件のドロップダウンを返す（無ければ None）。
+
+        検索結果画面には「並び替え」用に同じクラスのselectがあるため、クラス名だけでは
+        判別できない（これを誤認すると結果画面を検索画面と勘違いする）。
+        「26: 江戸川区」のような "番号:" 形式のoptionを持つものだけを検索条件とみなす。
+
+        fallback=True のときは、番号形式が1つも無ければ従来どおり最初のselectを返す
+        （条件を名前だけで持っている場合に備えた保険）。
+        """
+        selects = await page.query_selector_all('select.p-selectbox-input.custom-select')
+        for sel in selects:
+            try:
+                for opt in await sel.query_selector_all('option'):
+                    if _COND_OPTION_RE.match((await opt.inner_text()).strip()):
+                        return sel
+            except Exception:
+                continue
+        return selects[0] if (fallback and selects) else None
+
+    async def _is_search_screen(self, page: Page, wait_ms: int = 0) -> bool:
+        """検索画面（保存検索条件を選べる画面）にいるか判定する。
+
+        wait_ms > 0 なら、画面遷移直後で描画が間に合わないケースに備えて少し待って再確認する。
+        """
+        deadline = wait_ms
+        while True:
+            try:
+                if await self._find_condition_select(page) is not None:
+                    return True
+            except Exception:
+                pass
+            if deadline <= 0:
+                return False
+            await asyncio.sleep(0.5)
+            deadline -= 500
 
     async def _return_to_search(self, page: Page, interactive: bool = False) -> bool:
         """検索条件の画面に確実に戻す。
@@ -461,7 +496,7 @@ class REINSScraper:
                 timeout=3000,
             )
             await page.wait_for_load_state("networkidle")
-            if await self._is_search_screen(page):
+            if await self._is_search_screen(page, wait_ms=2000):
                 await _human_wait()
                 return True
         except Exception:
@@ -471,7 +506,7 @@ class REINSScraper:
         try:
             await page.go_back()
             await page.wait_for_load_state("networkidle")
-            if await self._is_search_screen(page):
+            if await self._is_search_screen(page, wait_ms=2000):
                 await _human_wait()
                 return True
         except Exception:
@@ -483,7 +518,7 @@ class REINSScraper:
             try:
                 await page.goto(url)
                 await page.wait_for_load_state("networkidle")
-                if await self._is_search_screen(page):
+                if await self._is_search_screen(page, wait_ms=2000):
                     await _human_wait()
                     return True
             except Exception as e:
@@ -501,7 +536,7 @@ class REINSScraper:
             print("     残りの条件をスキップする場合は s を入力して Enter。")
             print("  " + "-" * 56)
             loop = asyncio.get_event_loop()
-            while True:
+            for _ in range(10):   # 入力が即座に返り続ける環境で無限ループにならないよう上限を置く
                 try:
                     ans = (await loop.run_in_executor(None, input)).strip().lower()
                 except Exception:
@@ -509,7 +544,7 @@ class REINSScraper:
                 if ans == "s":
                     print("  → 残りの条件をスキップします。")
                     break
-                if await self._is_search_screen(page):
+                if await self._is_search_screen(page, wait_ms=1000):
                     print("  ✔ 検索画面に戻りました。続行します。")
                     return True
                 print("  まだ検索画面ではないようです。戻してから再度 Enter（やめる場合は s）")
@@ -532,8 +567,8 @@ class REINSScraper:
             await show_btn.click()
             await _human_wait()
 
-        # ドロップダウンを取得
-        sel = await page.query_selector('select.p-selectbox-input.custom-select')
+        # ドロップダウンを取得（結果画面の並び替えselectを掴まないよう中身で判別）
+        sel = await self._find_condition_select(page, fallback=True)
         if not sel:
             logger.warning("保存検索条件のドロップダウンが見つかりません")
             html = await page.content()
