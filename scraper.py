@@ -491,6 +491,7 @@ class REINSScraper:
 
         # ④ 半自動モードは操作者が目の前にいるので、直接お願いする。
         #    自動で戻せないまま進むと残りの条件が全部無駄になるため。
+        #    Enterが早すぎて画面が戻り切っていないこともあるので、何度でもやり直せるようにする。
         if interactive:
             print()
             print("  " + "-" * 56)
@@ -499,14 +500,19 @@ class REINSScraper:
             print("     戻してから Enter を押してください。")
             print("     残りの条件をスキップする場合は s を入力して Enter。")
             print("  " + "-" * 56)
-            try:
-                loop = asyncio.get_event_loop()
-                ans = (await loop.run_in_executor(None, input)).strip().lower()
-            except Exception:
-                ans = "s"
-            if ans != "s" and await self._is_search_screen(page):
-                print("  ✔ 検索画面に戻りました。続行します。")
-                return True
+            loop = asyncio.get_event_loop()
+            while True:
+                try:
+                    ans = (await loop.run_in_executor(None, input)).strip().lower()
+                except Exception:
+                    ans = "s"
+                if ans == "s":
+                    print("  → 残りの条件をスキップします。")
+                    break
+                if await self._is_search_screen(page):
+                    print("  ✔ 検索画面に戻りました。続行します。")
+                    return True
+                print("  まだ検索画面ではないようです。戻してから再度 Enter（やめる場合は s）")
 
         logger.warning("  検索画面に戻れませんでした（以降の条件も失敗する可能性があります）")
         print("  ⚠️ 検索画面に戻れませんでした。")
