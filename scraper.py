@@ -212,6 +212,8 @@ class REINSScraper:
                         await _human_wait()
                         await page.click('//button[text()="検索"]')
                         await page.wait_for_load_state("networkidle")
+                        # 結果テーブルが描画されるまで待つ（これが無いと0件と誤判定する）
+                        await self._wait_loading_done(page)
                         await asyncio.sleep(self.wait_search / 1000)
 
                         props = await self._parse_all_tabs_and_pages(page, name or str(cid))
@@ -421,6 +423,7 @@ class REINSScraper:
         await _human_wait()
         await page.click('//button[text()="検索"]')
         await page.wait_for_load_state("networkidle")
+        await self._wait_loading_done(page)
         await asyncio.sleep(self.wait_search / 1000)
 
         # 件数確認
@@ -436,6 +439,40 @@ class REINSScraper:
     # ----------------------------------------------------------------
     # お気に入り検索条件の選択
     # ----------------------------------------------------------------
+
+    async def _wait_loading_done(self, page: Page, timeout_ms: int = 30000) -> None:
+        """REINSのローディング表示（.p-loading）が消えるまで待つ。
+
+        wait_for_load_state("networkidle") だけでは足りない。通信が終わっても
+        オーバーレイが残っている間は、
+          ・結果テーブルが未描画のままパース → 「結果行が見つかりません」で0件
+          ・オーバーレイがボタンを覆う      → クリックがタイムアウト
+        が起きる（実機で両方発生）。
+
+        表示中の要素が無ければ即座に戻るので、正常時の待ち時間はほぼゼロ。
+        消えない場合もタイムアウト後そのまま進む（＝従来と同じ挙動）。
+        """
+        try:
+            loading = page.locator('.p-loading')
+        except Exception:
+            return
+
+        waited = 0
+        while waited < timeout_ms:
+            try:
+                n = await loading.count()
+                if n == 0:
+                    return
+                for i in range(n):
+                    if await loading.nth(i).is_visible():
+                        break
+                else:
+                    return          # 存在するが全部非表示＝読み込み完了
+            except Exception:
+                return              # 判定できないときは従来どおり先へ進む
+            await asyncio.sleep(0.25)
+            waited += 250
+        logger.warning("  ローディング表示が消えませんでした（そのまま続行します）")
 
     async def _find_condition_select(self, page: Page, fallback: bool = False):
         """保存検索条件のドロップダウンを返す（無ければ None）。
@@ -603,6 +640,8 @@ class REINSScraper:
         await _human_wait()
 
         # 「読込」ボタンをクリック
+        # 前の検索のローディングが残っているとオーバーレイに覆われて押せないので先に待つ
+        await self._wait_loading_done(page)
         await page.click('//button[normalize-space(text())="読込"]')
         await _human_wait()
 
@@ -725,6 +764,7 @@ class REINSScraper:
                     continue
                 await tab.click()
                 await page.wait_for_load_state("networkidle")
+                await self._wait_loading_done(page)
                 await _human_wait(500, 1000)
 
                 tab_props = await self._parse_all_pages(page, condition_name, tab_type=tab_type)
@@ -777,6 +817,7 @@ class REINSScraper:
                 break
 
             await page.wait_for_load_state("networkidle")
+            await self._wait_loading_done(page)
             await asyncio.sleep(self.wait_search / 1000)
             page_num += 1
             logger.debug(f"    ページ {page_num}")
@@ -798,6 +839,15 @@ class REINSScraper:
         header_map = await self._build_header_map(page)
 
         rows = await self._find_result_rows(page)
+        if not rows:
+            # 描画が間に合っていないだけの可能性があるので、待って1回だけやり直す
+            # （実機で「結果行が見つかりません→0件」が発生したケースの対策）
+            await self._wait_loading_done(page)
+            await asyncio.sleep(1.5)
+            rows = await self._find_result_rows(page)
+            if rows:
+                logger.info(f"  結果行の描画待ちで復帰: {len(rows)}行")
+
         if not rows:
             html = await page.content()
             fname = f"debug_result_{condition_name}_{datetime.now():%H%M%S}.html"
