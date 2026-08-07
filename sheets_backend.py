@@ -65,6 +65,17 @@ def _is_network_error(e: Exception) -> bool:
     if isinstance(e, (socket.gaierror, socket.timeout, ConnectionError, TimeoutError)):
         return True
 
+    # 接続を張り直すときはアクセストークンも取り直すため、通信断は認証層側で
+    # TransportError として出てくる（requests の ConnectionError にはならない）。
+    # これを拾わないと2回目以降のリトライが効かない。
+    # ※ RefreshError は鍵が無効なケースも含むのでリトライしない。
+    try:
+        from google.auth.exceptions import TransportError
+        if isinstance(e, TransportError):
+            return True
+    except Exception:
+        pass
+
     # gspread のAPIエラーは 429(レート制限) と 5xx(Google側障害) だけリトライ対象
     try:
         import gspread
