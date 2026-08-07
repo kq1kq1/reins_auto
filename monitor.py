@@ -28,6 +28,7 @@ from processor import (
     merge_batch, mark_removal_candidates, process_grace_period,
     restore_candidates, confirm_removals, cleanup_db, migrate_logs, STATUS_CANDIDATE,
     load_state, save_state, configure_storage,
+    DbLoadError, DbWriteError,
 )
 from rules import apply_rules
 from mailer import send_email, build_summary_email
@@ -853,6 +854,16 @@ def main() -> None:
     backend = cfg["storage"].get("backend", "excel")
     logger.info(f"=== REINS自動監視開始 mode={mode} backend={backend} {datetime.now():%Y-%m-%d %H:%M} ===")
 
+    # 通信できない状態のまま走り出すと、30分巡回した後の保存で落ちる。
+    # 何もしていない今のうちに確認して、ダメなら即やめる。
+    if backend == "sheets":
+        import sheets_backend
+        try:
+            sheets_backend.check_connection(cfg["storage"])
+        except Exception as e:
+            _print_db_error("スプレッドシートに接続できません", e)
+            sys.exit(1)
+
     # 設定をスプシへ書き出すモード（backendに関係なく実行可）
     if mode == "push_config":
         run_push_config(cfg)
@@ -883,22 +894,56 @@ def main() -> None:
         print(f"使い方: python monitor.py [{' | '.join(VALID_MODES)}]")
         sys.exit(1)
 
-    if mode == "restore":
-        run_restore(cfg)
-    elif mode == "confirm":
-        run_confirm(cfg)
-    elif mode == "cleanup":
-        run_cleanup(cfg)
-    elif mode == "migrate_logs":
-        run_migrate_logs(cfg)
-    elif mode in ("daily", "weekly"):
-        asyncio.run(run_loop(cfg, mode))
-    elif mode in ("half_morning", "half_daily", "half_weekly"):
-        asyncio.run(run_half_auto(cfg, mode))
-    else:
-        asyncio.run(run_auto(mode, cfg))
+    try:
+        if mode == "restore":
+            run_restore(cfg)
+        elif mode == "confirm":
+            run_confirm(cfg)
+        elif mode == "cleanup":
+            run_cleanup(cfg)
+        elif mode == "migrate_logs":
+            run_migrate_logs(cfg)
+        elif mode in ("daily", "weekly"):
+            asyncio.run(run_loop(cfg, mode))
+        elif mode in ("half_morning", "half_daily", "half_weekly"):
+            asyncio.run(run_half_auto(cfg, mode))
+        else:
+            asyncio.run(run_auto(mode, cfg))
+    except DbLoadError as e:
+        # DBが読めない＝差分が出せない。ここで止めればスプシは一切書き換わらない。
+        _print_db_error("DBを読み込めませんでした", e)
+        sys.exit(1)
+    except DbWriteError as e:
+        # 書き込みは「上書きが成功するまで既存データを消さない」順序にしてあるので、
+        # 失敗しても既存データは残っている。取得データはCSVに退避済み。
+        _print_db_error("DBを保存できませんでした", e, wrote_something=True)
+        sys.exit(1)
 
     logger.info("=== 完了 ===")
+
+
+def _print_db_error(title: str, e: Exception, wrote_something: bool = False) -> None:
+    """DB関連の失敗を、対処が分かる形で表示する。"""
+    logger.error(f"{title}: {e}")
+    print()
+    print("=" * 60)
+    print(f"⚠️ {title}")
+    print("=" * 60)
+    print(f"{e}")
+    print()
+    print("【よくある原因】")
+    print("  ・Wi-Fiが切れている / スリープ復帰直後でネットが復旧していない")
+    print("  ・社内ネットワークやDNSの一時的な不調")
+    print()
+    print("【対処】")
+    print("  1. ブラウザでインターネットに接続できるか確認してください")
+    print("  2. つながったら、もう一度このバッチを実行してください")
+    if wrote_something:
+        print("     （※既存データを消す前に中止しているので、スプレッドシートは元のままです）")
+        print("  3. それでも直らない場合は、上の「退避先」フォルダのCSVを管理者に渡してください")
+    else:
+        print("     （※スプレッドシートは一切書き換えていないので、そのまま再実行して大丈夫です）")
+    print()
 
 
 def today_str() -> str:

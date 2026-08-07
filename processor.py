@@ -44,6 +44,26 @@ REMOVED_COLUMNS = COLUMNS + ["成約・取消日"]
 LOG_COLUMNS     = ["日時", "検索条件名", "変更", "物件番号", "所在地", "価格", "旧価格"]
 
 
+class DbLoadError(RuntimeError):
+    """DBの読み込みに失敗した。
+
+    読めなかったものを「空のDB」として続行すると、取得した物件が全部『新規』と
+    判定され、保存時にシート全体をその数件で上書きしてしまう。
+    そうならないよう、読めなかったら必ずここで止める。
+    """
+
+
+class DbWriteError(RuntimeError):
+    """DBの保存に失敗した（通信エラー、または異常な件数減少を検知して中止した）。"""
+
+
+# 直近に読み込んだ行数。保存前に「異常に減っていないか」を確かめるために覚えておく。
+_LOADED_ROWS: dict[str, int | None] = {"db": None, "archive": None}
+
+# 保存前チェック: 読み込み時の何割を下回ったら異常とみなすか
+_SHRINK_LIMIT = 0.5
+
+
 # ----------------------------------------------------------------
 # ストレージバックエンド切替（excel / sheets）
 # ----------------------------------------------------------------
@@ -66,46 +86,70 @@ def _backend() -> str:
 # ----------------------------------------------------------------
 
 def load_db(db_path: str) -> pd.DataFrame:
-    """物件DBシートを読み込む。なければ空のDFを返す。"""
+    """物件DBシートを読み込む。DBがまだ存在しない場合のみ空DFを返す。
+
+    通信エラーやファイル破損など「本当は中身があるのに読めなかった」ときは
+    DbLoadError を投げる（空DFで続行すると全消し上書きになるため）。
+    """
     if _backend() == "sheets":
         import sheets_backend
-        return sheets_backend.read_sheet(_STORAGE, SHEET_DB, COLUMNS)
+        try:
+            df = sheets_backend.read_sheet(_STORAGE, SHEET_DB, COLUMNS, required=True)
+        except sheets_backend.SheetsReadError as e:
+            raise DbLoadError(str(e)) from e
+        _LOADED_ROWS["db"] = len(df)
+        return df
+
     if not Path(db_path).exists():
+        _LOADED_ROWS["db"] = 0
         return pd.DataFrame(columns=COLUMNS)
     try:
         xl = pd.ExcelFile(db_path)
         if SHEET_DB not in xl.sheet_names:
+            _LOADED_ROWS["db"] = 0
             return pd.DataFrame(columns=COLUMNS)
         df = pd.read_excel(xl, sheet_name=SHEET_DB, dtype=str).fillna("")
         # 旧形式DBに新カラムが無い場合は追加
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = ""
-        return df[COLUMNS]
+        df = df[COLUMNS]
+        _LOADED_ROWS["db"] = len(df)
+        return df
     except Exception as e:
         logger.error(f"DB読込エラー: {e}")
-        return pd.DataFrame(columns=COLUMNS)
+        raise DbLoadError(f"物件DBの読み込みに失敗しました: {e}") from e
 
 
 def load_archive(db_path: str) -> pd.DataFrame:
-    """成約・取消シートを読み込む。"""
+    """成約・取消シートを読み込む。読めなかった場合は DbLoadError（load_dbと同じ理由）。"""
     if _backend() == "sheets":
         import sheets_backend
-        return sheets_backend.read_sheet(_STORAGE, SHEET_REMOVED, REMOVED_COLUMNS)
+        try:
+            df = sheets_backend.read_sheet(_STORAGE, SHEET_REMOVED, REMOVED_COLUMNS, required=True)
+        except sheets_backend.SheetsReadError as e:
+            raise DbLoadError(str(e)) from e
+        _LOADED_ROWS["archive"] = len(df)
+        return df
+
     if not Path(db_path).exists():
+        _LOADED_ROWS["archive"] = 0
         return pd.DataFrame(columns=REMOVED_COLUMNS)
     try:
         xl = pd.ExcelFile(db_path)
         if SHEET_REMOVED not in xl.sheet_names:
+            _LOADED_ROWS["archive"] = 0
             return pd.DataFrame(columns=REMOVED_COLUMNS)
         df = pd.read_excel(xl, sheet_name=SHEET_REMOVED, dtype=str).fillna("")
         for col in REMOVED_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
-        return df[REMOVED_COLUMNS]
+        df = df[REMOVED_COLUMNS]
+        _LOADED_ROWS["archive"] = len(df)
+        return df
     except Exception as e:
         logger.error(f"アーカイブ読込エラー: {e}")
-        return pd.DataFrame(columns=REMOVED_COLUMNS)
+        raise DbLoadError(f"成約・取消シートの読み込みに失敗しました: {e}") from e
 
 
 def load_log(db_path: str) -> pd.DataFrame:
@@ -516,7 +560,9 @@ def cleanup_db(db_path: str) -> dict:
         pd.DataFrame(archive_records, columns=REMOVED_COLUMNS)
         if archive_records else pd.DataFrame(columns=REMOVED_COLUMNS)
     )
-    save_db(db_path, new_db_df, new_archive_df, log_rows)
+    # クリーンアップは重複統合で件数が大きく減るのが正常な処理。
+    # かつ monitor 側でバックアップを取ってから呼ばれるので、縮小チェックを免除する。
+    save_db(db_path, new_db_df, new_archive_df, log_rows, allow_shrink=True)
 
     return {
         "active_before":   active_before,
@@ -717,25 +763,89 @@ def confirm_removals(db_path: str, prop_ids: list[str]) -> tuple[int, list[str]]
 # 保存
 # ----------------------------------------------------------------
 
+def _sanity_check_before_write(db_df: pd.DataFrame, archive_df: pd.DataFrame) -> None:
+    """保存直前の安全確認。読み込み時より件数が極端に減っていたら書き込みを中止する。
+
+    保存は「シートを丸ごと置き換える」動作なので、DBを読めていない状態で
+    書きに行くと全データが数件で上書きされてしまう。その最後の砦。
+    """
+    prev_db   = _LOADED_ROWS.get("db")
+    prev_arch = _LOADED_ROWS.get("archive")
+    now_db    = 0 if db_df is None or db_df.empty else len(db_df)
+    now_arch  = 0 if archive_df is None or archive_df.empty else len(archive_df)
+
+    problems: list[str] = []
+    if prev_db and now_db < prev_db * _SHRINK_LIMIT:
+        problems.append(f"物件DB: {prev_db}件 → {now_db}件")
+    # 成約・取消は基本的に増える一方なので、減ること自体が異常
+    if prev_arch and now_arch < prev_arch * _SHRINK_LIMIT:
+        problems.append(f"成約・取消: {prev_arch}件 → {now_arch}件")
+
+    if problems:
+        raise DbWriteError(
+            "保存を中止しました（データが異常に減っています）: " + " / ".join(problems)
+            + "\n通信不良でDBを読めていない可能性があります。"
+            "意図的に大量削除した場合を除き、そのまま再実行してください。"
+        )
+
+
+def _emergency_dump(db_df: pd.DataFrame, archive_df: pd.DataFrame,
+                    new_log_rows: list[dict]) -> str:
+    """保存できなかったデータをローカルCSVに退避する。戻り値は退避先フォルダ。"""
+    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = Path(_STORAGE.get("export_dir", "exports")) / f"緊急退避_{ts}"
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        if db_df is not None and not db_df.empty:
+            db_df.to_csv(out / "物件DB.csv", index=False, encoding="utf-8-sig")
+        if archive_df is not None and not archive_df.empty:
+            archive_df.to_csv(out / "成約・取消.csv", index=False, encoding="utf-8-sig")
+        if new_log_rows:
+            pd.DataFrame(new_log_rows).to_csv(
+                out / "変更ログ.csv", index=False, encoding="utf-8-sig"
+            )
+        return str(out)
+    except Exception as e:
+        logger.error(f"緊急退避にも失敗: {e}")
+        return "(退避失敗)"
+
+
 def save_db(
     db_path: str,
     db_df: pd.DataFrame,
     archive_df: pd.DataFrame,
     new_log_rows: list[dict],
+    allow_shrink: bool = False,
 ) -> None:
-    """物件DB・成約取消を上書き保存し、変更ログは年別シートに末尾追記する。"""
+    """物件DB・成約取消を上書き保存し、変更ログは年別シートに末尾追記する。
+
+    allow_shrink=True は件数が大きく減るのが正常なメンテ処理（クリーンアップ等）専用。
+    """
     rows_by_year = _group_logs_by_year(new_log_rows)
 
-    if _backend() == "sheets":
-        import sheets_backend
-        sheets_backend.write_db_archive(
-            _STORAGE, db_df, archive_df, COLUMNS, REMOVED_COLUMNS,
-        )
-        sheets_backend.append_logs(_STORAGE, rows_by_year, LOG_COLUMNS)
-    else:
-        _excel_write_db_archive(db_path, db_df, archive_df)
-        _excel_append_logs(db_path, rows_by_year)
-        _apply_styles(db_path)
+    try:
+        if not allow_shrink:
+            _sanity_check_before_write(db_df, archive_df)
+
+        if _backend() == "sheets":
+            import sheets_backend
+            sheets_backend.write_db_archive(
+                _STORAGE, db_df, archive_df, COLUMNS, REMOVED_COLUMNS,
+            )
+            sheets_backend.append_logs(_STORAGE, rows_by_year, LOG_COLUMNS)
+        else:
+            _excel_write_db_archive(db_path, db_df, archive_df)
+            _excel_append_logs(db_path, rows_by_year)
+            _apply_styles(db_path)
+    except Exception as e:
+        # 保存できなかったデータは必ずローカルに逃がしてから落とす
+        dump = _emergency_dump(db_df, archive_df, new_log_rows)
+        logger.error(f"DB保存に失敗: {e} → 退避先: {dump}", exc_info=True)
+        raise DbWriteError(f"{e}\n保存できなかったデータの退避先: {dump}") from e
+
+    # 保存できた件数を次回チェックの基準にする
+    _LOADED_ROWS["db"]      = 0 if db_df is None or db_df.empty else len(db_df)
+    _LOADED_ROWS["archive"] = 0 if archive_df is None or archive_df.empty else len(archive_df)
 
     _dst = "Sheets" if _backend() == "sheets" else db_path
     logger.info(f"DB保存完了: {_dst} アクティブ{(db_df['状態']==STATUS_ACTIVE).sum() if not db_df.empty else 0}件 取消候補{(db_df['状態']==STATUS_CANDIDATE).sum() if not db_df.empty else 0}件")

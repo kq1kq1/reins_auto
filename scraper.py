@@ -113,6 +113,8 @@ class REINSScraper:
                         logger.error(f"  → エラー: {e}", exc_info=True)
                         await page.screenshot(path=f"error_{name}.png")
                         results[name] = []
+                        # 結果画面に取り残されると次の条件も失敗するので戻しておく
+                        await self._return_to_search(page)
 
                     await asyncio.sleep(self.wait_cond / 1000)
 
@@ -189,7 +191,13 @@ class REINSScraper:
                     try:
                         ok = await self._select_favorite(page, name, condition_id=cid)
                         if not ok:
+                            # 前の条件の結果画面などに残っている可能性があるので戻して1回だけ再試行
+                            logger.info(f"  条件選択に失敗→検索画面に戻して再試行: {label}")
+                            if await self._return_to_search(page):
+                                ok = await self._select_favorite(page, name, condition_id=cid)
+                        if not ok:
                             logger.warning(f"  条件選択失敗: {label}")
+                            print(f"  ✘ 条件を選択できませんでした（次の条件に進みます）")
                             results.append((name or str(cid), []))
                             continue
 
@@ -208,20 +216,18 @@ class REINSScraper:
 
                         # 検索画面に戻る
                         await asyncio.sleep(self.wait_cond / 1000)
-                        try:
-                            await page.click('a:has-text("検索条件再設定"), button:has-text("検索条件再設定"), a:has-text("再設定")', timeout=3000)
-                            await page.wait_for_load_state("networkidle")
-                        except Exception:
-                            await page.go_back()
-                            await page.wait_for_load_state("networkidle")
-                        await _human_wait()
+                        await self._return_to_search(page)
                     except Exception as e:
                         logger.error(f"  条件エラー: {e}", exc_info=True)
+                        print(f"  ✘ この条件は取得できませんでした（次の条件に進みます）")
                         try:
                             await page.screenshot(path=f"error_{name or cid}.png")
                         except Exception:
                             pass
                         results.append((name or str(cid), []))
+                        # 検索画面に戻してから次へ。ここを飛ばすと結果画面に残ったままになり、
+                        # 以降の条件が全部「ドロップダウンが見つかりません」で連鎖失敗する。
+                        await self._return_to_search(page)
 
                 print("\n全条件巡回完了。ブラウザを閉じます...")
             finally:
@@ -425,6 +431,59 @@ class REINSScraper:
     # お気に入り検索条件の選択
     # ----------------------------------------------------------------
 
+    async def _is_search_screen(self, page: Page) -> bool:
+        """保存検索条件のドロップダウンがあるか＝検索画面にいるか判定する。"""
+        try:
+            return await page.query_selector('select.p-selectbox-input.custom-select') is not None
+        except Exception:
+            return False
+
+    async def _return_to_search(self, page: Page) -> bool:
+        """検索条件の画面に確実に戻す。
+
+        ①「検索条件再設定」ボタン → ②ブラウザバック → ③検索画面URLへ直接遷移、の3段構え。
+        1つの条件でエラーが出たとき結果画面に取り残されると、以降の条件が全部
+        「ドロップダウンが見つかりません」で連鎖失敗するため、諦めずに戻す。
+        """
+        # ① 再設定ボタン（正常時のルート）
+        try:
+            await page.click(
+                'a:has-text("検索条件再設定"), button:has-text("検索条件再設定"), a:has-text("再設定")',
+                timeout=3000,
+            )
+            await page.wait_for_load_state("networkidle")
+            if await self._is_search_screen(page):
+                await _human_wait()
+                return True
+        except Exception:
+            pass
+
+        # ② ブラウザバック
+        try:
+            await page.go_back()
+            await page.wait_for_load_state("networkidle")
+            if await self._is_search_screen(page):
+                await _human_wait()
+                return True
+        except Exception:
+            pass
+
+        # ③ 検索画面URLへ直接遷移（ログイン済みセッションはそのまま使える）
+        url = self.reins_cfg.get("search_url") or self.reins_cfg.get("login_url", "")
+        if url:
+            try:
+                await page.goto(url)
+                await page.wait_for_load_state("networkidle")
+                if await self._is_search_screen(page):
+                    await _human_wait()
+                    return True
+            except Exception as e:
+                logger.warning(f"  検索画面への直接遷移に失敗: {e}")
+
+        logger.warning("  検索画面に戻れませんでした（以降の条件も失敗する可能性があります）")
+        print("  ⚠️ 検索画面に戻れませんでした。ブラウザで検索画面に戻してください。")
+        return False
+
     async def _select_favorite(self, page: Page, condition_name: str, condition_id: int | None = None) -> bool:
         """
         検索条件のドロップダウンから保存済み条件を選択して読み込む。
@@ -574,18 +633,37 @@ class REINSScraper:
         if not tabs:
             return await self._parse_all_pages(page, condition_name)
 
+        # タブの「掴み手」はパースやページ送りでDOMが再描画されると無効になる（stale）。
+        # そのため最初にラベル文字列だけ控えておき、クリック直前に毎回取り直す。
+        tab_texts: list[str] = []
         for tab in tabs:
-            tab_text = (await tab.inner_text()).strip()
+            try:
+                tab_texts.append((await tab.inner_text()).strip())
+            except Exception:
+                tab_texts.append("")
+
+        for idx, tab_text in enumerate(tab_texts):
             # 件数0のタブはスキップ（"(0件)" or "(0)" のみマッチ。"(40件)"等は除外）
-            if re.search(r'\(\s*0\s*(件)?\s*\)', tab_text):
+            if not tab_text or re.search(r'\(\s*0\s*(件)?\s*\)', tab_text):
                 continue
             tab_type = _tab_type_from_text(tab_text)
             await _human_wait()
-            await tab.click()
-            await page.wait_for_load_state("networkidle")
-            await _human_wait(500, 1000)
 
-            tab_props = await self._parse_all_pages(page, condition_name, tab_type=tab_type)
+            try:
+                tab = await self._find_tab(page, tab_text, idx)
+                if tab is None:
+                    logger.warning(f"    タブ「{tab_text}」が見つかりません→スキップ")
+                    continue
+                await tab.click()
+                await page.wait_for_load_state("networkidle")
+                await _human_wait(500, 1000)
+
+                tab_props = await self._parse_all_pages(page, condition_name, tab_type=tab_type)
+            except Exception as e:
+                # 1タブの失敗で条件ごと落とさない（他のタブの取得は活かす）
+                logger.error(f"    タブ「{tab_text}」の取得に失敗→スキップ: {e}")
+                continue
+
             logger.info(f"    タブ「{tab_text}」: {len(tab_props)}件")
             # 500件以上は検索上限で取りこぼしの可能性
             m = re.search(r"\(\s*(\d[\d,]*)\s*件\s*\)", tab_text)
@@ -594,6 +672,28 @@ class REINSScraper:
             all_props.extend(tab_props)
 
         return all_props
+
+    async def _find_tab(self, page: Page, tab_text: str, idx: int):
+        """クリック直前にタブ要素を取り直す。
+
+        ラベル一致を優先し、見つからなければ同じ位置のタブで代替する。
+        （再描画で並び順が変わってもラベルで正しいタブを選べるようにするため）
+        """
+        tabs = await page.query_selector_all('a[role="tab"]')
+        if not tabs:
+            return None
+
+        for t in tabs:
+            try:
+                if (await t.inner_text()).strip() == tab_text:
+                    return t
+            except Exception:
+                continue
+
+        if idx < len(tabs):
+            logger.warning(f"    タブ「{tab_text}」をラベルで特定できず、{idx + 1}番目のタブで代替します")
+            return tabs[idx]
+        return None
 
     async def _parse_all_pages(self, page: Page, condition_name: str, tab_type: str = "") -> list[dict]:
         props    = []
