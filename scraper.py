@@ -193,7 +193,7 @@ class REINSScraper:
                         if not ok:
                             # 前の条件の結果画面などに残っている可能性があるので戻して1回だけ再試行
                             logger.info(f"  条件選択に失敗→検索画面に戻して再試行: {label}")
-                            if await self._return_to_search(page):
+                            if await self._return_to_search(page, interactive=True):
                                 ok = await self._select_favorite(page, name, condition_id=cid)
                         if not ok:
                             logger.warning(f"  条件選択失敗: {label}")
@@ -216,7 +216,7 @@ class REINSScraper:
 
                         # 検索画面に戻る
                         await asyncio.sleep(self.wait_cond / 1000)
-                        await self._return_to_search(page)
+                        await self._return_to_search(page, interactive=True)
                     except Exception as e:
                         logger.error(f"  条件エラー: {e}", exc_info=True)
                         print(f"  ✘ この条件は取得できませんでした（次の条件に進みます）")
@@ -227,7 +227,8 @@ class REINSScraper:
                         results.append((name or str(cid), []))
                         # 検索画面に戻してから次へ。ここを飛ばすと結果画面に残ったままになり、
                         # 以降の条件が全部「ドロップダウンが見つかりません」で連鎖失敗する。
-                        await self._return_to_search(page)
+                        # （すでに検索画面にいる場合は _return_to_search が何もしない）
+                        await self._return_to_search(page, interactive=True)
 
                 print("\n全条件巡回完了。ブラウザを閉じます...")
             finally:
@@ -438,13 +439,21 @@ class REINSScraper:
         except Exception:
             return False
 
-    async def _return_to_search(self, page: Page) -> bool:
+    async def _return_to_search(self, page: Page, interactive: bool = False) -> bool:
         """検索条件の画面に確実に戻す。
 
-        ①「検索条件再設定」ボタン → ②ブラウザバック → ③検索画面URLへ直接遷移、の3段構え。
+        ⓪すでに検索画面 → ①「検索条件再設定」ボタン → ②ブラウザバック →
+        ③検索画面URLへ直接遷移 →（半自動時のみ）④操作者に戻してもらう。
+
         1つの条件でエラーが出たとき結果画面に取り残されると、以降の条件が全部
         「ドロップダウンが見つかりません」で連鎖失敗するため、諦めずに戻す。
         """
+        # ⓪ すでに検索画面にいるなら何もしない。
+        # 日付入力など検索画面上での失敗ではここに該当する。この判定が無いと
+        # 正常な画面から go_back / goto で離れてしまい、かえって以降を全滅させる。
+        if await self._is_search_screen(page):
+            return True
+
         # ① 再設定ボタン（正常時のルート）
         try:
             await page.click(
@@ -480,8 +489,27 @@ class REINSScraper:
             except Exception as e:
                 logger.warning(f"  検索画面への直接遷移に失敗: {e}")
 
+        # ④ 半自動モードは操作者が目の前にいるので、直接お願いする。
+        #    自動で戻せないまま進むと残りの条件が全部無駄になるため。
+        if interactive:
+            print()
+            print("  " + "-" * 56)
+            print("  ⚠️ 検索画面に自動で戻れませんでした。")
+            print("     ブラウザで売買物件検索の画面（保存した検索条件を選べる画面）に")
+            print("     戻してから Enter を押してください。")
+            print("     残りの条件をスキップする場合は s を入力して Enter。")
+            print("  " + "-" * 56)
+            try:
+                loop = asyncio.get_event_loop()
+                ans = (await loop.run_in_executor(None, input)).strip().lower()
+            except Exception:
+                ans = "s"
+            if ans != "s" and await self._is_search_screen(page):
+                print("  ✔ 検索画面に戻りました。続行します。")
+                return True
+
         logger.warning("  検索画面に戻れませんでした（以降の条件も失敗する可能性があります）")
-        print("  ⚠️ 検索画面に戻れませんでした。ブラウザで検索画面に戻してください。")
+        print("  ⚠️ 検索画面に戻れませんでした。")
         return False
 
     async def _select_favorite(self, page: Page, condition_name: str, condition_id: int | None = None) -> bool:
