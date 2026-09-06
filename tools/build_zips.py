@@ -19,7 +19,7 @@ import time
 import zipfile
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent.parent / "reins_portable"
+BASE = Path(__file__).resolve().parent.parent / "dist"
 JOBS = [("REINS_member", "配布_メンバー版.zip"),
         ("REINS物件監視_管理者版", "配布_管理者版.zip")]
 

@@ -26,7 +26,7 @@ from scraper import REINSScraper
 from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
-    restore_candidates, confirm_removals, cleanup_db, migrate_logs, STATUS_CANDIDATE,
+    restore_candidates, confirm_removals, migrate_logs, STATUS_CANDIDATE,
     load_state, save_state, configure_storage, configure_postgres,
     DbLoadError, DbWriteError, DbShrinkError,
 )
@@ -70,7 +70,7 @@ def _setup_bundled_browser() -> None:
 logger = logging.getLogger(__name__)
 
 VALID_MODES = (
-    "daily", "weekly", "restore", "confirm", "cleanup", "migrate_logs", "push_config",
+    "daily", "weekly", "restore", "confirm", "migrate_logs", "push_config",
     "half_morning", "half_daily", "half_weekly",
     "morning", "evening", "auto_weekly", "bootstrap", "debug", "test_mail",
 )
@@ -500,34 +500,6 @@ def run_restore(cfg: dict) -> None:
             print(f"  ✘ 見つからなかった: {', '.join(not_found)}")
 
 
-def run_cleanup(cfg: dict) -> None:
-    """既存DBのクリーンアップ（グループID再計算 + identity重複統合）。"""
-    import shutil
-
-    db_path = cfg["storage"]["db_path"]
-    if not Path(db_path).exists():
-        print(f"DBファイルが見つかりません: {db_path}")
-        return
-
-    # バックアップを作成
-    backup = Path(db_path).with_suffix(f".backup_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
-    shutil.copy2(db_path, backup)
-    print(f"バックアップ作成: {backup.name}")
-    print()
-
-    print("クリーンアップを実行します...")
-    stats = cleanup_db(db_path)
-
-    print()
-    print("=" * 60)
-    print("クリーンアップ完了")
-    print(f"  アクティブ件数: {stats['active_before']} → {stats['active_after']}")
-    print(f"  重複統合(アーカイブ送り): {stats['merged']}件")
-    print(f"  グループID付与: {stats['regrouped_count']}件")
-    print(f"  誤成約取消を削除: {stats.get('archive_orphans_removed', 0)}件")
-    print(f"  バックアップ: {backup}")
-    print("=" * 60)
-
 
 def run_migrate_logs(cfg: dict) -> None:
     """単一の変更ログを年別シートに分割し、完全重複を削除する（1回だけ実行）。"""
@@ -901,8 +873,6 @@ def main() -> None:
             run_restore(cfg)
         elif mode == "confirm":
             run_confirm(cfg)
-        elif mode == "cleanup":
-            run_cleanup(cfg)
         elif mode == "migrate_logs":
             run_migrate_logs(cfg)
         elif mode in ("daily", "weekly"):
