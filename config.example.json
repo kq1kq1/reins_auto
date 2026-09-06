@@ -1,52 +1,61 @@
 {
   "reins": {
     "login_url": "https://system.reins.jp/main/BFC/EA/BFCEAD001.html",
-    "username":  "",
-    "password":  ""
+    "username": "",
+    "password": ""
   },
-
   "search_conditions": [
-    {"id": 48, "name": "江戸川区マンション"},
-    {"id": 49, "name": "江戸川区土地"},
-    {"id": 50, "name": "江戸川区戸建て"}
+    {
+      "id": 48,
+      "name": "江戸川区マンション"
+    },
+    {
+      "id": 49,
+      "name": "江戸川区土地"
+    },
+    {
+      "id": 50,
+      "name": "江戸川区戸建て"
+    }
   ],
-
-  "weekly_search_conditions": [
-  ],
-
+  "weekly_search_conditions": [],
   "storage": {
-    "backend":      "excel",
-    "spreadsheet_id":       "（backend=sheets のとき）スプレッドシートのID",
+    "backend": "excel",
+    "spreadsheet_id": "（backend=sheets のとき）スプレッドシートのID",
     "service_account_json": "service_account.json",
-    "db_path":      "reins_db.xlsx",
-    "export_dir":   "exports",
-    "log_path":     "reins_auto.log",
-    "profile_dir":  "C:/Users/<ユーザー名をこのマシンに合わせて変更>/AppData/Local/reins_auto/browser_profile",
+    "db_path": "reins_db.xlsx",
+    "export_dir": "exports",
+    "log_path": "reins_auto.log",
+    "profile_dir": "C:/Users/<ユーザー名をこのマシンに合わせて変更>/AppData/Local/reins_auto/browser_profile",
     "pdf_keep_days": 7,
     "removal_confirm_misses": 2,
     "removal_min_coverage": 0.7
   },
-
   "notification": {
-    "email_from":         "your@gmail.com",
-    "email_to":           ["your@gmail.com"],
-    "smtp_server":        "smtp.gmail.com",
-    "smtp_port":          587,
-    "smtp_password":      "アプリパスワードをここに",
+    "email_from": "your@gmail.com",
+    "email_to": [
+      "your@gmail.com"
+    ],
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_password": "アプリパスワードをここに",
     "send_daily_summary": true
   },
-
   "print": {
-    "paper_size":   "B4",
-    "color_mode":   "monochrome",
+    "paper_size": "B4",
+    "color_mode": "monochrome",
     "printer_name": "",
     "sumatra_path": ""
   },
-
   "browser": {
-    "headless":              false,
-    "timeout_ms":            30000,
-    "wait_ms_after_search":  3000,
+    "headless": false,
+    "timeout_ms": 30000,
+    "wait_ms_after_search": 3000,
     "wait_ms_between_conditions": 2500
+  },
+  "postgres": {
+    "enabled": false,
+    "dsn": "postgresql://reins_app.<プロジェクトID>:<パスワード>@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres",
+    "schema": "reins"
   }
 }

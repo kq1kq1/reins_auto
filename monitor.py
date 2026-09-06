@@ -27,7 +27,7 @@ from processor import (
     load_db, load_archive, save_db,
     merge_batch, mark_removal_candidates, process_grace_period,
     restore_candidates, confirm_removals, cleanup_db, migrate_logs, STATUS_CANDIDATE,
-    load_state, save_state, configure_storage,
+    load_state, save_state, configure_storage, configure_postgres,
     DbLoadError, DbWriteError, DbShrinkError,
 )
 from rules import apply_rules
@@ -850,6 +850,8 @@ def main() -> None:
 
     # ストレージ backend（excel / sheets）を設定
     configure_storage(cfg["storage"])
+    # Postgres(Supabase)への写し設定（既定は無効。config.json で有効化する）
+    configure_postgres(cfg.get("postgres"))
 
     backend = cfg["storage"].get("backend", "excel")
     logger.info(f"=== REINS自動監視開始 mode={mode} backend={backend} {datetime.now():%Y-%m-%d %H:%M} ===")

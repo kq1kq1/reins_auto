@@ -79,11 +79,21 @@ _SHRINK_LIMIT = 0.5
 
 _STORAGE: dict = {"backend": "excel"}
 
+# Postgres(Supabase)への写し設定。既定は無効。
+_PG: dict = {}
+
 
 def configure_storage(storage_cfg: dict) -> None:
     """monitor 起動時に1回呼び、ストレージ設定（backend等）を保持する。"""
     global _STORAGE
     _STORAGE = dict(storage_cfg or {})
+
+
+def configure_postgres(pg_cfg: dict | None) -> None:
+    """monitor 起動時に1回呼び、Postgres(Supabase)への写し設定を保持する。
+    enabled が false（既定）なら写しは一切書かれない。"""
+    global _PG
+    _PG = dict(pg_cfg or {})
 
 
 def _backend() -> str:
@@ -825,6 +835,26 @@ def _emergency_dump(db_df: pd.DataFrame, archive_df: pd.DataFrame,
         return "(退避失敗)"
 
 
+def _mirror_to_postgres(db_df, archive_df, new_log_rows) -> None:
+    """Postgres(Supabase)へ写しを書く。
+
+    第1段階の方針: スプレッドシートが「正」、Postgresは「写し」。
+    写しの失敗で本番を止めては本末転倒なので、ここでの例外は必ず握りつぶす。
+    config.json の postgres.enabled が false なら何もしない。
+    """
+    if not _PG.get("enabled"):
+        return
+    try:
+        import pg_backend
+        n = pg_backend.upsert_properties(_PG, db_df, archive_df)
+        m = pg_backend.append_logs(_PG, new_log_rows)
+        logger.info(f"Postgresへ写しを保存: 物件{n:,}行 / ログ{m:,}行")
+    except Exception as e:
+        # 写しが書けなくてもスプシ側は保存済み。次回の実行で追いつく。
+        logger.warning(f"Postgresへの写し保存に失敗（本番には影響しません）: {e}")
+        print(f"  ⚠️ Supabaseへの保存に失敗しました（スプレッドシートは保存済みです）")
+
+
 def save_db(
     db_path: str,
     db_df: pd.DataFrame,
@@ -863,6 +893,10 @@ def save_db(
     # 保存できた件数を次回チェックの基準にする
     _LOADED_ROWS["db"]      = 0 if db_df is None or db_df.empty else len(db_df)
     _LOADED_ROWS["archive"] = 0 if archive_df is None or archive_df.empty else len(archive_df)
+
+    # Postgres(Supabase)にも同じ内容を書く（写し）。
+    # 第1段階はスプシが正なので、こちらが失敗しても本番は止めない。
+    _mirror_to_postgres(db_df, archive_df, new_log_rows)
 
     _dst = "Sheets" if _backend() == "sheets" else db_path
     logger.info(f"DB保存完了: {_dst} アクティブ{(db_df['状態']==STATUS_ACTIVE).sum() if not db_df.empty else 0}件 取消候補{(db_df['状態']==STATUS_CANDIDATE).sum() if not db_df.empty else 0}件")
