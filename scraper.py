@@ -84,8 +84,9 @@ class REINSScraper:
         # 条件が失敗したときの再試行回数と待ち時間（REINSが一時的に重いだけのことが多い）
         self.cond_retries = self.browser_cfg.get("condition_retries", 3)
         self.retry_wait   = self.browser_cfg.get("retry_wait_ms", 8000)
-        # 最後まで取得できなかった条件のラベル。週次の取消検知の可否判断に使う
-        self.failed_conditions: list[str] = []
+        # 最後まで取得できなかった条件。週次の取消検知から除外するのに使う
+        self.failed_conditions: list[str] = []      # 表示用ラベル "50: 名前"
+        self.failed_condition_keys: list[str] = []  # 「検出条件」列と突き合わせるキー
 
     async def run(
         self,
@@ -98,6 +99,7 @@ class REINSScraper:
         """
         results: dict[str, list[dict]] = {}
         self.failed_conditions = []
+        self.failed_condition_keys = []
 
         async with async_playwright() as pw:
             context = await pw.chromium.launch_persistent_context(
@@ -126,6 +128,7 @@ class REINSScraper:
                         results[name] = []
                         # 取消検知の可否判断に使うため、失敗した条件を控える
                         self.failed_conditions.append(name)
+                        self.failed_condition_keys.append(name)
                         # 結果画面に取り残されると次の条件も失敗するので戻しておく
                         await self._return_to_search(page)
 
@@ -168,6 +171,7 @@ class REINSScraper:
         self._existing_no_zumen = existing_no_zumen_ids or set()
         self._from_date_override = from_date_override
         self.failed_conditions = []
+        self.failed_condition_keys = []
         self._seen_ippan_keys.clear()
         self._dl_seen_pids.clear()
         self._seen_pids_run.clear()
@@ -222,16 +226,48 @@ class REINSScraper:
                             results.append((self._cond_key(condition), props))
                         else:
                             still_failed.append(condition)
-                            results.append((self._cond_key(condition), []))
                     pending = still_failed
 
-                # 最後まで取れなかった条件は呼び出し側に伝える。
-                # 週次の取消検知は「全条件が取れている」前提なので、
-                # 1つでも欠けたままだと掲載中の物件を成約扱いにしてしまう。
-                self.failed_conditions = [self._cond_label(c) for c in pending]
+                # 3周目以降: まだ取れない条件があれば、操作者に聞いて何度でも挑戦する。
+                # ブラウザはまだ開いているので、画面の状態を直してから続行できる。
+                while pending:
+                    labels = ", ".join(self._cond_label(c) for c in pending)
+                    print()
+                    print("-" * 56)
+                    print(f"  取得できていない条件が {len(pending)}件 あります。")
+                    print(f"  {labels}")
+                    print("  ブラウザの状態を直してから再試行できます。")
+                    print("-" * 56)
+                    try:
+                        loop = asyncio.get_event_loop()
+                        ans = (await loop.run_in_executor(
+                            None, lambda: input("  もう一度この条件だけ取得しますか? [Y/n]: ")
+                        )).strip().lower()
+                    except Exception:
+                        ans = "n"
+                    if ans in ("n", "no"):
+                        break
+
+                    retry_failed: list[dict] = []
+                    for condition in pending:
+                        props, ok = await self._run_one_condition(page, condition, run_mode)
+                        if ok:
+                            results.append((self._cond_key(condition), props))
+                        else:
+                            retry_failed.append(condition)
+                    pending = retry_failed
+
+                # 最後まで取れなかった条件は0件として記録しつつ、呼び出し側に伝える。
+                # 取消検知は「その条件が取れている」前提なので、欠けたままだと
+                # その条件の掲載中物件を成約扱いにしてしまう。
+                for condition in pending:
+                    results.append((self._cond_key(condition), []))
+                self.failed_conditions     = [self._cond_label(c) for c in pending]
+                self.failed_condition_keys = [self._cond_key(c) for c in pending]
                 if self.failed_conditions:
                     logger.error(f"最後まで取得できなかった条件: {', '.join(self.failed_conditions)}")
                     print(f"\n  ⚠️ 取得できなかった条件: {', '.join(self.failed_conditions)}")
+                    print("     この条件の物件は取消検知から除外します。")
 
                 print("\n全条件巡回完了。ブラウザを閉じます...")
             finally:

@@ -256,7 +256,7 @@ async def run_loop(cfg: dict, mode: str) -> None:
         min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
         ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
         if ok:
-            db_df, candidates, weekly_logs = mark_removal_candidates(
+            db_df, candidates, weekly_logs, _ = mark_removal_candidates(
                 db_df, diff["found_ids"], today, now_str
             )
             log_rows.extend(weekly_logs)
@@ -407,33 +407,32 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     if mode == "half_weekly":
         min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
         ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
-        # 取得できなかった条件があるなら取消検知は行わない。
-        # 取消検知は「全条件が取れている」前提の処理なので、1条件欠けただけでも
-        # そのエリアの掲載中物件をまとめて成約扱いにしてしまう（実際に発生した）。
-        # カバレッジ判定は全体比率しか見ないため、1条件の欠落は素通りしてしまう。
-        if ok and getattr(scraper, "failed_conditions", None):
-            ok = False
-            miss = ", ".join(scraper.failed_conditions)
-            logger.error(f"取得できなかった条件があるため取消検知をスキップ: {miss}")
-            print()
-            print("=" * 60)
-            print("⚠️ 取消検知をスキップしました")
-            print("=" * 60)
-            print(f"次の条件が取得できませんでした: {miss}")
-            print("このまま取消検知を行うと、掲載中の物件が成約扱いになるためです。")
-            print("取得できなかった条件を確認して、もう一度実行してください。")
-            print("（新規物件の取り込みと価格変更の検知は通常どおり行われます）")
-            print("=" * 60)
+        # 取得できなかった条件があれば、その条件で見つかっていた物件だけ
+        # 取消検知の対象から外す。取れていない条件の物件を「見つからなかった＝
+        # 公開停止」と判断すると、掲載中の物件が成約扱いになるため。
+        # 全体のカバレッジ判定は比率しか見ないので、1条件の欠落は素通りする。
+        exempt = set(getattr(scraper, "failed_condition_keys", None) or [])
         if ok:
-            db_df, candidates, weekly_logs = mark_removal_candidates(
-                db_df, diff["found_ids"], today, now_str
+            db_df, candidates, weekly_logs, exempted = mark_removal_candidates(
+                db_df, diff["found_ids"], today, now_str, exempt_conditions=exempt
             )
             log_rows.extend(weekly_logs)
             # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
             db_df, archive_df, confirmed, grace_logs = process_grace_period(
-                db_df, archive_df, today, now_str, confirm_misses=confirm_misses
+                db_df, archive_df, today, now_str, confirm_misses=confirm_misses,
+                exempt_conditions=exempt,
             )
             log_rows.extend(grace_logs)
+            if exempt:
+                miss = ", ".join(scraper.failed_conditions)
+                logger.warning(f"取得失敗条件のため取消検知から除外: {miss} / {exempted}件")
+                print()
+                print("=" * 60)
+                print(f"⚠️ 取得できなかった条件: {miss}")
+                print(f"   この条件で見つかっていた {exempted}件 は取消検知から除外しました")
+                print("   （掲載中の物件が成約扱いになるのを防ぐため）")
+                print("   新規取り込み・価格変更の検知は通常どおり行っています")
+                print("=" * 60)
         else:
             logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")
             print(f"⚠️ 今回の取得が少なすぎます（{fc}/{ac}={cov:.0%}）。取消検知をスキップしました。")
@@ -618,20 +617,21 @@ async def run_auto(mode: str, cfg: dict) -> None:
     if mode in ("auto_weekly",):
         min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
         ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
-        # 取得できなかった条件があるなら取消検知しない（half_weekly と同じ理由）
-        if ok and getattr(scraper, "failed_conditions", None):
-            ok = False
-            miss = ", ".join(scraper.failed_conditions)
-            logger.error(f"取得できなかった条件があるため取消検知をスキップ: {miss}")
+        # 取得できなかった条件の物件だけ取消検知から外す（half_weekly と同じ理由）
+        exempt = set(getattr(scraper, "failed_condition_keys", None) or [])
         if ok:
-            db_df, candidates, weekly_logs = mark_removal_candidates(
-                db_df, diff["found_ids"], today, now_str
+            db_df, candidates, weekly_logs, exempted = mark_removal_candidates(
+                db_df, diff["found_ids"], today, now_str, exempt_conditions=exempt
             )
             log_rows.extend(weekly_logs)
             # 猶予期間切れの取消候補を成約・取消へ（週次のときだけ＝全件検索で再確認済み）
             db_df, archive_df, confirmed, grace_logs = process_grace_period(
-                db_df, archive_df, today, now_str, confirm_misses=confirm_misses
+                db_df, archive_df, today, now_str, confirm_misses=confirm_misses,
+                exempt_conditions=exempt,
             )
+            if exempt:
+                logger.warning(f"取得失敗条件のため取消検知から除外: "
+                               f"{', '.join(scraper.failed_conditions)} / {exempted}件")
             log_rows.extend(grace_logs)
         else:
             logger.warning(f"週次カバレッジ低（{fc}/{ac}={cov:.0%}）→ 取消検知をスキップ")

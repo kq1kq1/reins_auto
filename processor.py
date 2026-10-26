@@ -481,23 +481,49 @@ def migrate_logs(db_path: str) -> dict:
 # 週次: 取消候補マーキング
 # ----------------------------------------------------------------
 
+def _detected_conditions(rec: dict) -> set[str]:
+    """「検出条件」列をカンマ区切りのまま集合にする。
+
+    "30, 50" や "江戸川区戸建て, 50" のように複数条件で見つかった物件がある。
+    部分一致だと "5" が "50" に当たってしまうので、必ず要素単位で比較する。
+    """
+    return {c.strip() for c in str(rec.get("検出条件", "") or "").split(",") if c.strip()}
+
+
+def _is_exempt(rec: dict, exempt_conditions: set[str] | None) -> bool:
+    """取得できなかった条件で見つかっていた物件かどうか。
+
+    その条件が今回取れていない以上、「見つからなかった＝公開停止」とは
+    判断できない。取消検知の対象から外す。
+    """
+    if not exempt_conditions:
+        return False
+    return bool(_detected_conditions(rec) & exempt_conditions)
+
+
 def mark_removal_candidates(
     db_df: pd.DataFrame, found_ids: set[str], today: str, now_str: str,
-) -> tuple[pd.DataFrame, list[dict], list[dict]]:
+    exempt_conditions: set[str] | None = None,
+) -> tuple[pd.DataFrame, list[dict], list[dict], int]:
     """
     今回の週次実行で見つからなかった物件を処理する。
     - アクティブで見つからなかった → 取消候補にして 未検出回数=1
     - 既に取消候補で今回も見つからなかった → 未検出回数 +1
     （見つかったものは merge_batch 側で 未検出回数 リセット済み）
+
+    exempt_conditions に取得できなかった条件名を渡すと、その条件で
+    見つかっていた物件は対象外にする（取得失敗を公開停止と誤判定しないため）。
     Returns:
       - 更新後のdb_df
       - candidates: 今回新たに取消候補になった物件dictのリスト
       - log_rows: 変更ログ行
+      - exempted: 取得失敗した条件のため対象外にした件数
     """
     candidates: list[dict] = []
     log_rows: list[dict]   = []
+    exempted = 0
     if db_df.empty:
-        return db_df, candidates, log_rows
+        return db_df, candidates, log_rows, exempted
 
     records = db_df.to_dict("records")
     incremented = 0
@@ -505,6 +531,9 @@ def mark_removal_candidates(
         pid    = str(rec.get(ID_COL, "")).strip()
         status = rec.get("状態", "")
         if not pid or pid in found_ids:
+            continue
+        if _is_exempt(rec, exempt_conditions):
+            exempted += 1
             continue
         if status == STATUS_ACTIVE:
             # 新たに見つからなくなった → 取消候補1回目
@@ -526,8 +555,11 @@ def mark_removal_candidates(
             incremented += 1
 
     new_df = pd.DataFrame(records, columns=COLUMNS)
-    logger.info(f"取消候補マーキング: 新規{len(candidates)}件 / 継続未検出{incremented}件")
-    return new_df, candidates, log_rows
+    msg = f"取消候補マーキング: 新規{len(candidates)}件 / 継続未検出{incremented}件"
+    if exempted:
+        msg += f" / 取得失敗条件のため対象外{exempted}件"
+    logger.info(msg)
+    return new_df, candidates, log_rows, exempted
 
 
 # ----------------------------------------------------------------
@@ -540,6 +572,7 @@ def process_grace_period(
     today: str,
     now_str: str,
     confirm_misses: int = 2,
+    exempt_conditions: set[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict], list[dict]]:
     """
     取消候補のうち、週次実行で confirm_misses 回連続見つからなかった物件を
@@ -560,6 +593,10 @@ def process_grace_period(
 
     for rec in db_df.to_dict("records"):
         if rec.get("状態", "") != STATUS_CANDIDATE:
+            keep_records.append(rec)
+            continue
+        # 取得できなかった条件の物件は、未検出かどうか判断できないので確定しない
+        if _is_exempt(rec, exempt_conditions):
             keep_records.append(rec)
             continue
         try:
