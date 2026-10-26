@@ -20,7 +20,10 @@ def send_email(cfg: dict, subject: str, body_html: str) -> bool:
     raw_to        = cfg.get("email_to", "")
     smtp_server   = cfg.get("smtp_server", "smtp.gmail.com")
     smtp_port     = cfg.get("smtp_port", 587)
-    smtp_password = cfg.get("smtp_password", "")
+    smtp_password = str(cfg.get("smtp_password", ""))
+    # Gmailのアプリパスワードは「xxxx xxxx xxxx xxxx」表示なので、貼り付けた空白を許容する
+    if "gmail.com" in str(smtp_server):
+        smtp_password = smtp_password.replace(" ", "")
 
     # email_to は文字列でもリストでも受け付ける
     if isinstance(raw_to, (list, tuple)):
@@ -49,13 +52,37 @@ def send_email(cfg: dict, subject: str, body_html: str) -> bool:
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.ehlo()
             server.starttls()
-            server.login(email_from, smtp_password)
+            server.ehlo()
+            _login(server, email_from, smtp_password)
             server.send_message(msg)
         logger.info(f"メール送信成功: {subject}")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(
+            f"メール送信失敗: SMTP認証エラー {e.smtp_code} {e.smtp_error!r}\n"
+            "→ Gmailの場合はアプリパスワードが無効（失効・削除・変更）になった可能性があります。"
+            "Googleアカウント → セキュリティ → アプリパスワード で再発行し、"
+            "config.json の notification.smtp_password を更新してください。"
+        )
+        return False
     except Exception as e:
         logger.error(f"メール送信失敗: {e}\n{traceback.format_exc()}")
         return False
+
+
+def _login(server: smtplib.SMTP, user: str, password: str) -> None:
+    """SMTPログイン。
+
+    smtplib は AUTH PLAIN を優先するが、Gmail は PLAIN が失敗すると 535 を返さず
+    接続を切るため、エラーが「Connection unexpectedly closed」に化けて原因が
+    分からなくなる。AUTH LOGIN なら 535 の本文が返るのでこちらを優先する。
+    """
+    auth_methods = str(server.esmtp_features.get("auth", "")).upper()
+    if "LOGIN" in auth_methods:
+        server.user, server.password = user, password
+        server.auth("LOGIN", server.auth_login, initial_response_ok=False)
+    else:
+        server.login(user, password)
 
 
 # ----------------------------------------------------------------
