@@ -407,6 +407,23 @@ async def run_half_auto(cfg: dict, mode: str) -> None:
     if mode == "half_weekly":
         min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
         ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
+        # 取得できなかった条件があるなら取消検知は行わない。
+        # 取消検知は「全条件が取れている」前提の処理なので、1条件欠けただけでも
+        # そのエリアの掲載中物件をまとめて成約扱いにしてしまう（実際に発生した）。
+        # カバレッジ判定は全体比率しか見ないため、1条件の欠落は素通りしてしまう。
+        if ok and getattr(scraper, "failed_conditions", None):
+            ok = False
+            miss = ", ".join(scraper.failed_conditions)
+            logger.error(f"取得できなかった条件があるため取消検知をスキップ: {miss}")
+            print()
+            print("=" * 60)
+            print("⚠️ 取消検知をスキップしました")
+            print("=" * 60)
+            print(f"次の条件が取得できませんでした: {miss}")
+            print("このまま取消検知を行うと、掲載中の物件が成約扱いになるためです。")
+            print("取得できなかった条件を確認して、もう一度実行してください。")
+            print("（新規物件の取り込みと価格変更の検知は通常どおり行われます）")
+            print("=" * 60)
         if ok:
             db_df, candidates, weekly_logs = mark_removal_candidates(
                 db_df, diff["found_ids"], today, now_str
@@ -601,6 +618,11 @@ async def run_auto(mode: str, cfg: dict) -> None:
     if mode in ("auto_weekly",):
         min_cov = cfg["storage"].get("removal_min_coverage", 0.7)
         ok, cov, fc, ac = _check_removal_coverage(db_df, diff["found_ids"], min_cov)
+        # 取得できなかった条件があるなら取消検知しない（half_weekly と同じ理由）
+        if ok and getattr(scraper, "failed_conditions", None):
+            ok = False
+            miss = ", ".join(scraper.failed_conditions)
+            logger.error(f"取得できなかった条件があるため取消検知をスキップ: {miss}")
         if ok:
             db_df, candidates, weekly_logs = mark_removal_candidates(
                 db_df, diff["found_ids"], today, now_str

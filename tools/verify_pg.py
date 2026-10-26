@@ -78,9 +78,14 @@ def main():
 
     with pg_backend.connect(pg_cfg) as conn:
         with conn.cursor() as cur:
-            cur.execute("select property_no, status from reins.properties")
+            # 廃番（スプシから消えた古い物件番号）は突合の対象外にする
+            cur.execute("select property_no, status from reins.properties "
+                        "where status <> %s", (pg_backend.STATUS_OBSOLETE,))
             pg = dict(cur.fetchall())
-            print(f"[2] Postgres側 {len(pg):,}件")
+            cur.execute("select count(*) from reins.properties where status = %s",
+                        (pg_backend.STATUS_OBSOLETE,))
+            obsolete = cur.fetchone()[0]
+            print(f"[2] Postgres側 {len(pg):,}件（ほかに廃番 {obsolete:,}件）")
 
             # ── 件数と過不足 ──
             missing = set(sheet) - set(pg)

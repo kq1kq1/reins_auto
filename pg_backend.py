@@ -26,6 +26,8 @@ SCHEMA_DEFAULT = "reins"
 CHUNK = 500          # 1回のINSERTにまとめる行数（往復回数を減らすため）
 
 STATUS_CLOSED = "成約・取消"
+# スプシから消えた物件番号に付ける印（主因は物件番号変更による振り直し）
+STATUS_OBSOLETE = "廃番"
 
 # DataFrameの日本語列 → DBの英語列
 COLUMN_MAP = {
@@ -247,7 +249,65 @@ def upsert_properties(cfg, db_df, archive_df):
                 )
                 cur.execute(stmt, [v for r in chunk for v in r])
         conn.commit()
+
+    # スプシから消えた物件番号に印を付ける（UPSERTだけでは孤児が残り続けるため）
+    try:
+        idx = DB_COLUMNS.index("property_no")
+        mark_obsolete(cfg, [r[idx] for r in rows])
+    except Exception as e:
+        # 印付けに失敗しても本体の書き込みは成功しているので続行する
+        logger.warning(f"廃番マークに失敗（写し本体は保存済み）: {e}")
+
     return len(rows)
+
+
+def mark_obsolete(cfg, live_ids, min_ratio=0.5):
+    """スプレッドシートから消えた物件番号を「廃番」に印を付ける。
+
+    なぜ必要か:
+      書き込みはUPSERTだけなので、スプシ側から行が消えても
+      Postgresには古い行が残り続ける（主因は物件番号変更。
+      番号が振り直されると、古い番号の行が孤児になる）。
+      実測で1,557件たまっており、うち100%が「同じ物件が別番号で生きている」だった。
+
+    消さずに印を付ける理由:
+      - 配布アプリのユーザー(reins_app)に削除権限を与えていない
+      - 履歴として残したほうが、番号変更の追跡に使える
+
+    安全装置:
+      live_ids が現在の行数に対して極端に少ないときは何もしない。
+      読み込み失敗などで一部しか渡ってこなかった場合に、
+      大量の行を誤って廃番にするのを防ぐ。
+    """
+    if not live_ids:
+        return 0
+    schema = cfg.get("schema", SCHEMA_DEFAULT)
+    ids = list(live_ids)
+
+    with connect(cfg) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"select count(*) from {schema}.properties where status <> %s",
+                        (STATUS_OBSOLETE,))
+            current = cur.fetchone()[0]
+            if current and len(ids) < current * min_ratio:
+                logger.warning(
+                    f"廃番マークを中止: 渡された物件番号が少なすぎます "
+                    f"({len(ids):,}件 / DB {current:,}件)"
+                )
+                return 0
+
+            cur.execute(
+                f"update {schema}.properties "
+                f"   set status = %s, updated_at = now() "
+                f" where status <> %s "
+                f"   and property_no <> all(%s)",
+                (STATUS_OBSOLETE, STATUS_OBSOLETE, ids),
+            )
+            n = cur.rowcount
+        conn.commit()
+    if n:
+        logger.info(f"スプシから消えた物件番号を廃番にしました: {n:,}件")
+    return n
 
 
 def append_logs(cfg, log_rows):

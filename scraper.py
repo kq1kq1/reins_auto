@@ -81,6 +81,11 @@ class REINSScraper:
         self._seen_ippan_keys: set[tuple] = set()  # 一般媒介の重複検知用
         self._dl_seen_pids: set[str] = set()  # 今回のrunで既にDL済みの物件番号
         self._seen_pids_run: set[str] = set()  # 今回のrun全体で既にパース済みの物件番号
+        # 条件が失敗したときの再試行回数と待ち時間（REINSが一時的に重いだけのことが多い）
+        self.cond_retries = self.browser_cfg.get("condition_retries", 3)
+        self.retry_wait   = self.browser_cfg.get("retry_wait_ms", 8000)
+        # 最後まで取得できなかった条件のラベル。週次の取消検知の可否判断に使う
+        self.failed_conditions: list[str] = []
 
     async def run(
         self,
@@ -92,6 +97,7 @@ class REINSScraper:
         戻り値: {条件名: [物件dict, ...]}
         """
         results: dict[str, list[dict]] = {}
+        self.failed_conditions = []
 
         async with async_playwright() as pw:
             context = await pw.chromium.launch_persistent_context(
@@ -118,6 +124,8 @@ class REINSScraper:
                         logger.error(f"  → エラー: {e}", exc_info=True)
                         await page.screenshot(path=f"error_{name}.png")
                         results[name] = []
+                        # 取消検知の可否判断に使うため、失敗した条件を控える
+                        self.failed_conditions.append(name)
                         # 結果画面に取り残されると次の条件も失敗するので戻しておく
                         await self._return_to_search(page)
 
@@ -159,6 +167,7 @@ class REINSScraper:
         self._existing_ids = existing_ids or set()
         self._existing_no_zumen = existing_no_zumen_ids or set()
         self._from_date_override = from_date_override
+        self.failed_conditions = []
         self._seen_ippan_keys.clear()
         self._dl_seen_pids.clear()
         self._seen_pids_run.clear()
@@ -186,62 +195,130 @@ class REINSScraper:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, input)
 
+                # 1周目: 全条件を順に実行し、失敗したものは控えておく
+                pending: list[dict] = []
                 for condition in search_conditions:
-                    name = condition.get("name", "")
-                    cid  = condition.get("id")
-                    label = f"{cid}: {name}" if cid is not None else name
-                    logger.info(f"条件選択: {label} [{run_mode}]")
-                    print(f"\n→ 条件「{label}」を実行中...")
+                    props, ok = await self._run_one_condition(page, condition, run_mode)
+                    if ok:
+                        results.append((self._cond_key(condition), props))
+                    else:
+                        pending.append(condition)
 
-                    try:
-                        ok = await self._select_favorite(page, name, condition_id=cid)
-                        if not ok:
-                            # 前の条件の結果画面などに残っている可能性があるので戻して1回だけ再試行
-                            logger.info(f"  条件選択に失敗→検索画面に戻して再試行: {label}")
-                            if await self._return_to_search(page, interactive=True):
-                                ok = await self._select_favorite(page, name, condition_id=cid)
-                        if not ok:
-                            logger.warning(f"  条件選択失敗: {label}")
-                            print(f"  ✘ 条件を選択できませんでした（次の条件に進みます）")
-                            results.append((name or str(cid), []))
-                            continue
+                # 2周目: 1周目で取れなかった条件だけ、時間を置いてもう一度挑戦する。
+                # REINSが一時的に重いだけのことが多く、後からなら通ることがあるため。
+                if pending:
+                    labels = ", ".join(self._cond_label(c) for c in pending)
+                    logger.warning(f"取得できなかった条件を再試行します: {labels}")
+                    print(f"\n{'=' * 56}")
+                    print(f"  取得できなかった条件をもう一度試します（{len(pending)}件）")
+                    print(f"  {labels}")
+                    print(f"{'=' * 56}")
+                    await asyncio.sleep(self.retry_wait / 1000)
 
-                        if run_mode != "weekly":
-                            await self._set_date_filter(page, run_mode)
+                    still_failed: list[dict] = []
+                    for condition in pending:
+                        props, ok = await self._run_one_condition(page, condition, run_mode)
+                        if ok:
+                            results.append((self._cond_key(condition), props))
+                        else:
+                            still_failed.append(condition)
+                            results.append((self._cond_key(condition), []))
+                    pending = still_failed
 
-                        await _human_wait()
-                        await page.click('//button[text()="検索"]')
-                        await page.wait_for_load_state("networkidle")
-                        # 結果テーブルが描画されるまで待つ（これが無いと0件と誤判定する）
-                        await self._wait_loading_done(page)
-                        await asyncio.sleep(self.wait_search / 1000)
-
-                        props = await self._parse_all_tabs_and_pages(page, name or str(cid))
-                        logger.info(f"  → {len(props)}件取得")
-                        print(f"  ✔ {len(props)}件取得")
-                        results.append((name or str(cid), props))
-
-                        # 検索画面に戻る
-                        await asyncio.sleep(self.wait_cond / 1000)
-                        await self._return_to_search(page, interactive=True)
-                    except Exception as e:
-                        logger.error(f"  条件エラー: {e}", exc_info=True)
-                        print(f"  ✘ この条件は取得できませんでした（次の条件に進みます）")
-                        try:
-                            await page.screenshot(path=f"error_{name or cid}.png")
-                        except Exception:
-                            pass
-                        results.append((name or str(cid), []))
-                        # 検索画面に戻してから次へ。ここを飛ばすと結果画面に残ったままになり、
-                        # 以降の条件が全部「ドロップダウンが見つかりません」で連鎖失敗する。
-                        # （すでに検索画面にいる場合は _return_to_search が何もしない）
-                        await self._return_to_search(page, interactive=True)
+                # 最後まで取れなかった条件は呼び出し側に伝える。
+                # 週次の取消検知は「全条件が取れている」前提なので、
+                # 1つでも欠けたままだと掲載中の物件を成約扱いにしてしまう。
+                self.failed_conditions = [self._cond_label(c) for c in pending]
+                if self.failed_conditions:
+                    logger.error(f"最後まで取得できなかった条件: {', '.join(self.failed_conditions)}")
+                    print(f"\n  ⚠️ 取得できなかった条件: {', '.join(self.failed_conditions)}")
 
                 print("\n全条件巡回完了。ブラウザを閉じます...")
             finally:
                 await context.close()
 
         return results
+
+    # ----------------------------------------------------------------
+    # 1条件分の実行（失敗時はその場で再試行する）
+    # ----------------------------------------------------------------
+
+    @staticmethod
+    def _cond_key(condition: dict) -> str:
+        """結果の見出しに使う文字列（従来と同じ形式を保つ）。"""
+        return condition.get("name", "") or str(condition.get("id"))
+
+    @staticmethod
+    def _cond_label(condition: dict) -> str:
+        cid, name = condition.get("id"), condition.get("name", "")
+        return f"{cid}: {name}" if cid is not None else name
+
+    async def _run_one_condition(
+        self, page: Page, condition: dict, run_mode: str
+    ) -> tuple[list[dict], bool]:
+        """1つの検索条件を実行する。失敗したらその場で再試行する。
+
+        戻り値: (物件リスト, 成功したか)
+        成功したかを返すのは、0件という結果と「取得できなかった」を
+        呼び出し側で区別するため。混同すると週次で誤って成約確定になる。
+        """
+        name = condition.get("name", "")
+        cid = condition.get("id")
+        label = self._cond_label(condition)
+
+        for attempt in range(1, self.cond_retries + 1):
+            if attempt > 1:
+                logger.info(f"  再試行 {attempt}/{self.cond_retries}: {label}")
+                print(f"  ↻ 再試行 {attempt}/{self.cond_retries}...")
+                await asyncio.sleep(self.retry_wait / 1000)
+                # 画面が中途半端な状態で残っている可能性があるので整えてから
+                await self._return_to_search(page, interactive=True)
+
+            logger.info(f"条件選択: {label} [{run_mode}]")
+            if attempt == 1:
+                print(f"\n→ 条件「{label}」を実行中...")
+
+            try:
+                ok = await self._select_favorite(page, name, condition_id=cid)
+                if not ok:
+                    # 前の条件の結果画面などに残っている可能性があるので戻して1回だけ再試行
+                    logger.info(f"  条件選択に失敗→検索画面に戻して再試行: {label}")
+                    if await self._return_to_search(page, interactive=True):
+                        ok = await self._select_favorite(page, name, condition_id=cid)
+                if not ok:
+                    logger.warning(f"  条件選択失敗: {label}")
+                    continue
+
+                if run_mode != "weekly":
+                    await self._set_date_filter(page, run_mode)
+
+                await _human_wait()
+                await page.click('//button[text()="検索"]')
+                await page.wait_for_load_state("networkidle")
+                # 結果テーブルが描画されるまで待つ（これが無いと0件と誤判定する）
+                await self._wait_loading_done(page)
+                await asyncio.sleep(self.wait_search / 1000)
+
+                props = await self._parse_all_tabs_and_pages(page, name or str(cid))
+                logger.info(f"  → {len(props)}件取得")
+                print(f"  ✔ {len(props)}件取得")
+
+                # 検索画面に戻る
+                await asyncio.sleep(self.wait_cond / 1000)
+                await self._return_to_search(page, interactive=True)
+                return props, True
+
+            except Exception as e:
+                logger.error(f"  条件エラー({attempt}/{self.cond_retries}): {e}", exc_info=True)
+                try:
+                    await page.screenshot(path=f"error_{name or cid}_{attempt}.png")
+                except Exception:
+                    pass
+                # 結果画面に取り残されると以降が連鎖失敗するので必ず戻す
+                await self._return_to_search(page, interactive=True)
+
+        print(f"  ✘ 「{label}」は取得できませんでした（あとでもう一度試します）")
+        return [], False
 
     async def run_manual_loop(
         self, dl_zumen: bool,
